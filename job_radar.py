@@ -332,6 +332,30 @@ def format_job(job):
     )
 
 
+def format_cover_letter(job):
+    """Create a short, factual cover-letter draft without an external AI API."""
+    _, matched = preliminary_fit(job)
+    display = {
+        "playwright": "Playwright", "selenium": "Selenium", "appium": "Appium",
+        "postman": "Postman", "swagger": "Swagger", "python": "Python",
+        "javascript": "JavaScript", "sql": "SQL", "gitlab": "GitLab CI/CD",
+        "github actions": "CI/CD", "jira": "Jira", "testrail": "TestRail",
+        "xray": "Xray", "jmeter": "JMeter", "api": "API testing",
+        "mobile": "mobile testing", "web": "web testing", "regression": "regression testing",
+        "integration": "integration testing",
+    }
+    skills = [display.get(term, term.title()) for term in matched[:4]]
+    skills_text = ", ".join(skills) if skills else "manual, web, mobile, and API testing"
+    company = job["company"] if job["company"] != "Not listed" else "Hiring Team"
+    return (
+        "📝 Cover Letter Draft\n\n"
+        f"Hi {company} team,\n\n"
+        f"I’m interested in the {job['title']} role. I have around five years of experience in manual and automated testing for web, mobile, and API-based applications. My background includes {skills_text}, as well as test documentation, defect tracking, and CI/CD.\n\n"
+        "I’d be glad to bring this experience to your team and learn more about the product. Thank you for your time and consideration.\n\n"
+        "Best regards,\nAhmad Zarei"
+    )
+
+
 def collect_jobs():
     sources = [
         ("LinkedIn", parse_linkedin),
@@ -354,26 +378,34 @@ def run_once(dry_run=False):
     seen = load_seen()
     jobs = collect_jobs()
     new_jobs = []
+    queued_keys = set()
     for job in jobs:
         key = job_key(job)
-        if key not in seen:
+        if key not in seen and key not in queued_keys:
             new_jobs.append(job)
-            seen.add(key)
-    # Avoid flooding the first run; send the 10 most relevant-looking new jobs.
+            queued_keys.add(key)
+    # Send the most relevant jobs first, but do not mark queued jobs as seen
+    # until they have actually been sent. This prevents losing jobs when a
+    # large batch arrives at once.
     new_jobs.sort(key=lambda j: preliminary_fit(j)[0], reverse=True)
     if dry_run:
         print(f"Found {len(jobs)} relevant jobs; {len(new_jobs)} are new.")
         for job in new_jobs[:10]:
             print("\n" + format_job(job))
     else:
+        sent_count = 0
         for job in new_jobs[:10]:
             telegram_send(format_job(job))
             time.sleep(1)
-        if len(new_jobs) > 10:
-            telegram_send(f"ℹ️ {len(new_jobs) - 10} more new QA jobs were found. They will be checked on the next run.")
-        print(f"Sent {min(len(new_jobs), 10)} new job(s).")
-    if not dry_run:
-        save_seen(seen)
+            telegram_send(format_cover_letter(job))
+            seen.add(job_key(job))
+            save_seen(seen)
+            sent_count += 1
+            time.sleep(1)
+        remaining = len(new_jobs) - sent_count
+        if remaining > 0:
+            telegram_send(f"ℹ️ {remaining} more new QA jobs are queued for the next scan.")
+        print(f"Sent {sent_count} new job(s). {remaining} remain queued.")
 
 
 def main():
