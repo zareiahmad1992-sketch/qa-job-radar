@@ -395,13 +395,12 @@ def run_once(dry_run=False):
     else:
         sent_count = 0
         for job in new_jobs[:10]:
-            telegram_send(format_job(job))
-            time.sleep(1)
-            telegram_send(format_cover_letter(job))
+            # Send the job details and its cover-letter draft in one message
+            # so the alert is faster and easier to use.
+            telegram_send(format_job(job) + "\n\n" + format_cover_letter(job))
             seen.add(job_key(job))
             save_seen(seen)
             sent_count += 1
-            time.sleep(1)
         remaining = len(new_jobs) - sent_count
         if remaining > 0:
             telegram_send(f"ℹ️ {remaining} more new QA jobs are queued for the next scan.")
