@@ -164,6 +164,64 @@ class StaffLinkParser(HTMLParser):
                 self.title_parts = []
 
 
+LINKEDIN_SEARCHES = [
+    ("QA Engineer", "Europe", "2"),
+    ("QA Automation Engineer", "Europe", "2"),
+    ("Manual QA", "Europe", "2"),
+    ("API QA", "Europe", "2"),
+    ("QA Engineer", "Armenia", "1"),
+]
+
+
+def parse_linkedin():
+    """Read public, no-login LinkedIn job-search pages.
+
+    f_WT=2 is LinkedIn's public remote-work filter and f_WT=1 is on-site.
+    This does not log in, use cookies, or access the user's account.
+    """
+    jobs = []
+    card_re = re.compile(r'<div[^>]+class="[^"]*job-search-card[^"]*".*?</li>', re.I | re.S)
+    link_re = re.compile(r'<a[^>]+class="[^"]*base-card__full-link[^"]*"[^>]+href="([^"]+)"', re.I | re.S)
+    title_re = re.compile(r'<h3[^>]*>(.*?)</h3>', re.I | re.S)
+    company_re = re.compile(r'<h4[^>]*>(.*?)</h4>', re.I | re.S)
+    location_re = re.compile(r'<span[^>]+class="[^"]*job-search-card__location[^"]*"[^>]*>(.*?)</span>', re.I | re.S)
+    date_re = re.compile(r'<time[^>]+datetime="([^"]+)"[^>]*>(.*?)</time>', re.I | re.S)
+    for keywords, location, work_type in LINKEDIN_SEARCHES:
+        params = urllib.parse.urlencode({
+            "keywords": keywords,
+            "location": location,
+            "f_TPR": "r86400",
+            "f_WT": work_type,
+        })
+        url = "https://www.linkedin.com/jobs/search/?" + params
+        try:
+            raw = fetch(url).decode("utf-8", "replace")
+        except Exception as exc:
+            print(f"LinkedIn ({keywords}, {location}): skipped ({exc})")
+            continue
+        for card in card_re.findall(raw):
+            link_match = link_re.search(card)
+            title_match = title_re.search(card)
+            if not link_match or not title_match:
+                continue
+            link = html.unescape(link_match.group(1)).split("?")[0]
+            title = clean_text(title_match.group(1))
+            company_match = company_re.search(card)
+            location_match = location_re.search(card)
+            date_match = date_re.search(card)
+            company = clean_text(company_match.group(1)) if company_match else "Not listed"
+            job_location = clean_text(location_match.group(1)) if location_match else location
+            published = clean_text(date_match.group(2)) if date_match else ""
+            job = make_job(
+                "LinkedIn", title, company, job_location, link,
+                f"Public LinkedIn search result for {keywords} in {location}", published,
+            )
+            job["remote"] = work_type == "2"
+            job["scope"] = "europe_remote" if work_type == "2" else "armenia_onsite"
+            jobs.append(job)
+    return jobs
+
+
 def parse_staff():
     raw = fetch("https://staff.am/en/jobs/quality-assurance").decode("utf-8", "replace")
     parser = StaffLinkParser()
@@ -209,6 +267,8 @@ def in_requested_scope(job):
     # Requested scope: on-site Armenia + remote jobs open to Europe.
     if job["source"] == "Staff.am":
         return job.get("remote") is False and "armenia" in job["location"].lower()
+    if job["source"] == "LinkedIn":
+        return job.get("scope") == "europe_remote" or job.get("scope") == "armenia_onsite"
     if job.get("remote") is not True:
         return False
     location = job["location"].lower()
@@ -258,7 +318,7 @@ def telegram_send(text):
 def format_job(job):
     score, matched = preliminary_fit(job)
     matched_text = ", ".join(matched) if matched else "general QA keywords"
-    scope_label = "🇦🇲 Armenia / On-site" if job["source"] == "Staff.am" else "🌍 Europe / Remote"
+    scope_label = "🇦🇲 Armenia / On-site" if (job["source"] == "Staff.am" or job.get("scope") == "armenia_onsite") else "🌍 Europe / Remote"
     return (
         "🆕 QA Job Radar\n\n"
         f"{job['title']}\n"
@@ -273,7 +333,13 @@ def format_job(job):
 
 
 def collect_jobs():
-    sources = [("Remote OK", parse_remoteok), ("Remotive", parse_remotive), ("Jobicy", parse_jobicy), ("Staff.am", parse_staff)]
+    sources = [
+        ("LinkedIn", parse_linkedin),
+        ("Remote OK", parse_remoteok),
+        ("Remotive", parse_remotive),
+        ("Jobicy", parse_jobicy),
+        ("Staff.am", parse_staff),
+    ]
     all_jobs = []
     for name, parser in sources:
         try:
