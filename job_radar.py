@@ -1,8 +1,24 @@
 #!/usr/bin/env python3
-"""QA Job Radar: public job sources -> Telegram.
+"""
+QA Job Radar — software QA roles for a candidate based in Yerevan, Armenia.
 
-The script never stores the Telegram token. Set TELEGRAM_BOT_TOKEN in the shell.
-Run once for a test, then run without --once to poll every 10 minutes.
+Priority order for what gets sent:
+
+  🥇 Tier 1  Remote, open to Europe / EMEA / worldwide / Armenia
+  🥈 Tier 2  Armenia — on-site or remote, any employer
+  🥉 Tier 3  On-site in Europe, but only when the posting mentions visa
+             sponsorship or paid relocation
+
+Anything outside those three tiers is dropped, including the manufacturing and
+hardware quality jobs that dominate the "quality engineer" search results.
+
+Usage:
+    python job_radar.py --once        scan and send to Telegram
+    python job_radar.py --dry-run     scan and print only
+    python job_radar.py --report      print everything with its tier, no filtering
+
+Environment:
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 """
 
 from __future__ import annotations
@@ -15,42 +31,142 @@ import re
 import time
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-POLL_SECONDS = int(os.getenv("JOB_RADAR_POLL_SECONDS", "600"))
 STATE_FILE = Path(__file__).with_name("seen_jobs.json")
-USER_AGENT = "AhmadQAJobRadar/1.0 (+public-job-feeds)"
+USER_AGENT = "Mozilla/5.0 (compatible; QAJobRadar/2.0)"
 
-INCLUDE_TERMS = [
-    "qa", "quality assurance", "software tester", "test engineer", "sdet",
-    "manual qa", "automation qa", "qa automation", "api tester", "api qa",
-    "mobile qa", "software quality", "test automation", "quality engineer",
-]
-EXCLUDE_TERMS = [
-    "medical assistant", "nursing", "nurse", "sales qa", "quality control manager",
-    "food quality", "manufacturing quality", "warehouse quality",
-]
-RESUME_TERMS = [
-    "playwright", "selenium", "appium", "postman", "swagger", "python",
-    "javascript", "sql", "gitlab", "github actions", "jira", "testrail",
-    "xray", "jmeter", "api", "mobile", "web", "regression", "integration",
-]
-EUROPE_TERMS = [
-    "europe", "european", "emea", "e.u.", "eu", "worldwide", "global", "anywhere",
-    "uk", "united kingdom", "ireland", "germany", "france", "netherlands", "belgium",
-    "luxembourg", "switzerland", "austria", "italy", "spain", "portugal", "poland",
-    "czech", "czechia", "slovakia", "hungary", "romania", "bulgaria", "croatia",
-    "serbia", "slovenia", "greece", "cyprus", "malta", "estonia", "latvia", "lithuania",
-    "sweden", "norway", "denmark", "finland", "iceland", "ukraine", "georgia", "armenia",
-]
+# Hard cap per run so a backlog never floods the chat.
+MAX_PER_RUN = 8
 
 
-def fetch(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json,text/html"})
-    with urllib.request.urlopen(req, timeout=30) as response:
+# --------------------------------------------------------------------------- #
+# What counts as the job Ahmad actually does
+# --------------------------------------------------------------------------- #
+
+# The title has to say one of these. Checking the title and not the whole
+# description is deliberate: a warehouse job whose text mentions "test" once
+# should not get through.
+SOFTWARE_QA_TITLE_PATTERNS = [
+    r"\bqa\b", r"\bq\.a\.\b", r"quality assurance", r"software tester",
+    r"\btester\b", r"test engineer", r"\bsdet\b", r"test automation",
+    r"automation (qa|tester|engineer)", r"\bqa (engineer|analyst|specialist|lead)\b",
+    r"software quality", r"test analyst", r"manual test", r"qa automation",
+    r"mobile qa", r"api (tester|qa)", r"quality engineer",
+]
+
+# Words that mean it is a different job wearing a similar title. This is the
+# list that was missing before and let through Polaroid, Flex, Ypsomed and the
+# Estonian certification role.
+HARD_EXCLUDE = [
+    # manufacturing / hardware quality
+    "manufacturing", "ems ", " odm ", "supplier quality", "npi ", "pfmea",
+    "spc ", "msa ", "gr&r", "grr", "cp/cpk", "cpk", "8d ", "8d problem",
+    "capa", "ts16949", "iatf", "iso 13485", "iso 14971", "mdsap",
+    "iso 9001", "iso 17025", "gmp", "fda ", "21 cfr", "medical device",
+    "calibration", "injection molding", "injection moulding", "soldering",
+    "smt ", "pcb", "hardware validation", "hardware quality", "mechanical",
+    "electrical", "electronics", "plastics", "vibration", "thermal",
+    "lean manufacturing", "six sigma", "kaizen", "supplier audits",
+    "laboratory", "certification body", "product certification", "emc ",
+    "iec ", "ce marking", "ul certification", "regulatory affairs",
+    # defence and cleared work
+    "defence", "defense", "security clearance", "sicherheitsüberprüfung",
+    "anü", "arbeitnehmerüberlassung", "classified",
+    # on-site outside the two regions we accept
+    "must relocate to the us", "us work authorization", "must be based in the us",
+    "only us residents", "w2 only", "authorized to work in the us",
+]
+
+# Postings that need a language Ahmad does not speak. Kept narrow so a job that
+# merely mentions a German client does not get dropped.
+LANGUAGE_BLOCKERS = [
+    "fluent german", "german required", "deutschkenntnisse", "sehr gute deutsch",
+    "fließend deutsch", "verhandlungssicher deutsch", "deutsch (c1", "deutsch c1",
+    "german (c1", "german c2", "c1 german", "c2 german", "b2 german required",
+    "nederlands", "dutch required", "fluent dutch", "estonian required",
+    "fluent french", "french required", "fluent spanish required",
+    "italiano madrelingua", "polski wymagany",
+]
+
+# Companies that ask applicants for money, sell training, or are otherwise not
+# real employers. Seen in the wild; kept here so they never reach the chat again.
+SCAM_BLOCKLIST = [
+    "ace it careers", "meridian prime", "freelancer verified", "testerup",
+    "tester up", "software testing academy", "it career switch",
+    "experience factor", "training and placement", "pay for placement",
+]
+
+# Phrases that mean the "job" is really a course or a fee.
+SCAM_PHRASES = [
+    "paid training", "training fee", "placement fee", "registration fee",
+    "security deposit", "purchase your own equipment", "unpaid training period",
+    "investment required", "pay to start",
+]
+
+# A title written in these languages is a strong sign the interview is too.
+FOREIGN_TITLE_HINTS = [
+    "m/w/d", "(m/w/x)", "w/m/d", "mit", "und", "für", "entwickler",
+    "tester (m", "referent", "spezialist", "ingenieur", "ingénieur",
+    "desenvolvedor", "ingegnere", "inżynier", "vývojář",
+]
+
+QA_SKILLS = [
+    # automation
+    "playwright", "selenium", "cypress", "appium", "testcafe",
+    # language / tools
+    "python", "javascript", "typescript", "postman", "swagger", "sql",
+    "rest", "graphql", "api testing", "json",
+    # process
+    "regression", "exploratory", "integration testing", "e2e", "manual",
+    "test case", "test plan", "testrail", "jira", "xray", "zephyr",
+    "istqb", "sdlc", "stlc", "agile", "scrum", "bdd", "gherkin",
+    # infra
+    "gitlab", "github actions", "jenkins", "docker", "kubernetes", "ci/cd",
+    "jmeter", "k6", "elkj", "elk", "kibana", "grafana", "sql",
+    "android", "ios", "mobile testing", "devtools",
+]
+
+# Places that mean the job is open to someone sitting in Yerevan.
+REMOTE_OPEN_MARKERS = [
+    "worldwide", "anywhere", "global", "emea", "europe", "european",
+    "eu only", "eu-based", "european union", "remote", "international",
+    "any country", "anywhere in the world",
+]
+
+EUROPE_COUNTRIES = [
+    "armenia", "georgia", "poland", "germany", "netherlands", "belgium",
+    "luxembourg", "france", "spain", "portugal", "italy", "austria",
+    "switzerland", "czech", "czechia", "slovakia", "hungary", "romania",
+    "bulgaria", "croatia", "serbia", "slovenia", "greece", "cyprus", "malta",
+    "estonia", "latvia", "lithuania", "sweden", "norway", "denmark",
+    "finland", "iceland", "ireland", "united kingdom", "uk", "poland",
+    "ukraine", "moldova", "montenegro", "albania", "bosnia", "macedonia",
+]
+
+SPONSORSHIP_MARKERS = [
+    "visa sponsorship", "sponsorship available", "we sponsor", "sponsor visa",
+    "work permit", "relocation package", "relocation support", "relocation bonus",
+    "paid relocation", "relocation assistance", "we relocate", "blue card",
+    "eu blue card", "skilled worker visa", "tier 2", "certificate of sponsorship",
+    "relocation offered", "visa support",
+]
+
+
+# --------------------------------------------------------------------------- #
+# Fetch helpers
+# --------------------------------------------------------------------------- #
+
+def fetch(url: str, timeout: int = 30) -> bytes:
+    req = urllib.request.Request(url, headers={
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json,text/html,application/xml",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as response:
         return response.read()
 
 
@@ -67,225 +183,433 @@ def clean_text(value) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def make_job(source, title, company, location, url, description="", published=""):
-    title = clean_text(title)
-    company = clean_text(company) or "Not listed"
-    location = clean_text(location) or "Remote / not specified"
-    description = clean_text(description)
-    url = html.unescape(str(url or "")).strip()
-    if url.startswith("/"):
-        url = "https://staff.am" + url
+def as_list(value):
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if not value:
+        return []
+    return [v.strip() for v in str(value).split(",") if v.strip()]
+
+
+def strip_tags(text: str) -> str:
+    return re.sub(r"<[^>]+>", " ", text or "")
+
+
+def job(source, title, company, location, url, description="", published="",
+        remote=None, restrictions=None, relocation=False):
     return {
         "source": source,
-        "title": title,
-        "company": company,
-        "location": location,
-        "url": url,
-        "description": description,
+        "title": clean_text(title),
+        "company": clean_text(company) or "Not listed",
+        "location": clean_text(location) or "Not specified",
+        "url": html.unescape(str(url or "")).strip(),
+        "description": clean_text(description)[:4000],
         "published": clean_text(published),
+        "remote": remote,
+        "restrictions": [r.lower() for r in as_list(restrictions)],
+        "relocation": relocation,
     }
 
 
-def parse_remoteok():
-    data = fetch_json("https://remoteok.com/api")
-    jobs = []
-    for item in data:
-        if not isinstance(item, dict) or not item.get("slug"):
-            continue
-        job = make_job(
-            "Remote OK", item.get("position"), item.get("company"), item.get("location"),
-            item.get("url") or ("https://remoteok.com/remote-jobs/" + item.get("slug", "")),
-            item.get("description"), item.get("date"),
-        )
-        job["remote"] = True
-        jobs.append(job)
-    return jobs
+# --------------------------------------------------------------------------- #
+# Sources
+# --------------------------------------------------------------------------- #
+
+def parse_himalayas():
+    """Himalayas gives per-job location restrictions, which is the cleanest signal."""
+    out = []
+    for offset in (0, 20, 40):
+        try:
+            data = fetch_json(f"https://himalayas.app/jobs/api?limit=20&offset={offset}")
+        except Exception:
+            break
+        for item in data.get("jobs", []):
+            out.append(job(
+                "Himalayas", item.get("title"), item.get("companyName"),
+                ", ".join(as_list(item.get("locationRestrictions"))) or "Remote",
+                item.get("applicationLink") or item.get("guid"),
+                item.get("description"), item.get("pubDate"),
+                remote=True, restrictions=item.get("locationRestrictions"),
+            ))
+    return out
 
 
 def parse_remotive():
     data = fetch_json("https://remotive.com/api/remote-jobs?category=software-dev&limit=100")
-    jobs = []
+    out = []
     for item in data.get("jobs", []):
-        job = make_job(
+        out.append(job(
             "Remotive", item.get("title"), item.get("company_name"),
             item.get("candidate_required_location"), item.get("url"),
             item.get("description"), item.get("publication_date"),
-        )
-        job["remote"] = True
-        jobs.append(job)
-    return jobs
+            remote=True, restrictions=[item.get("candidate_required_location")],
+        ))
+    return out
 
 
 def parse_jobicy():
     data = fetch_json("https://jobicy.com/api/v2/remote-jobs?count=50")
-    jobs = []
+    out = []
     for item in data.get("jobs", []):
-        job = make_job(
+        out.append(job(
             "Jobicy", item.get("jobTitle"), item.get("companyName"),
-            item.get("jobGeo") or item.get("jobLevel"), item.get("url") or item.get("jobUrl"),
+            item.get("jobGeo") or "Remote",
+            item.get("url") or item.get("jobUrl"),
             item.get("jobDescription"), item.get("pubDate"),
-        )
-        job["remote"] = True
-        jobs.append(job)
-    return jobs
+            remote=True, restrictions=[item.get("jobGeo")],
+        ))
+    return out
+
+
+def parse_workingnomads():
+    data = fetch_json("https://www.workingnomads.com/api/exposed_jobs/")
+    out = []
+    for item in data:
+        out.append(job(
+            "Working Nomads", item.get("title"), item.get("company_name"),
+            item.get("location"), item.get("url"),
+            item.get("description"), item.get("pub_date"),
+            remote=True, restrictions=[item.get("location")],
+        ))
+    return out
+
+
+def parse_remoteok():
+    data = fetch_json("https://remoteok.com/api")
+    out = []
+    for item in data:
+        if not isinstance(item, dict) or not item.get("slug"):
+            continue
+        out.append(job(
+            "Remote OK", item.get("position"), item.get("company"),
+            item.get("location") or "Remote",
+            item.get("url") or ("https://remoteok.com/remote-jobs/" + item.get("slug", "")),
+            item.get("description"), item.get("date"),
+            remote=True, restrictions=[item.get("location")],
+        ))
+    return out
+
+
+def parse_weworkremotely():
+    """RSS. Each <item> carries a <region> such as 'Anywhere in the World'."""
+    raw = fetch("https://weworkremotely.com/categories/remote-programming-jobs.rss")
+    root = ET.fromstring(raw)
+    out = []
+    for item in root.iter("item"):
+        title_el = item.find("title")
+        region_el = item.find("region")
+        link_el = item.find("link")
+        desc_el = item.find("description")
+        title = clean_text(title_el.text if title_el is not None else "")
+        region = clean_text(region_el.text if region_el is not None else "Remote")
+        # WWR titles are "Company: Job title"
+        company, _, role = title.partition(":")
+        if role:
+            title, company = role.strip(), company.strip()
+        else:
+            company = "Not listed"
+        out.append(job(
+            "We Work Remotely", title, company, region,
+            link_el.text if link_el is not None else "",
+            desc_el.text if desc_el is not None else "",
+            remote=True, restrictions=[region],
+        ))
+    return out
+
+
+def parse_arbeitnow():
+    """Germany-heavy board. Includes a `remote` flag per posting."""
+    out = []
+    for page in (1, 2):
+        try:
+            data = fetch_json(f"https://www.arbeitnow.com/api/job-board-api?page={page}")
+        except Exception:
+            break
+        for item in data.get("data", []):
+            out.append(job(
+                "Arbeitnow", item.get("title"), item.get("company_name"),
+                item.get("location"), item.get("url"),
+                item.get("description"), item.get("created_at"),
+                remote=bool(item.get("remote")),
+                restrictions=[item.get("location")],
+            ))
+    return out
+
+
+def parse_landingjobs():
+    """Europe-focused. `relocation_paid` is a real sponsorship signal."""
+    out = []
+    for page in (1, 2, 3):
+        try:
+            data = fetch_json(f"https://landing.jobs/api/v1/jobs?limit=100&page={page}")
+        except Exception:
+            break
+        if not isinstance(data, list):
+            break
+        for item in data:
+            locations = ", ".join(
+                f"{loc.get('city','')} {loc.get('country_code','')}".strip()
+                for loc in item.get("locations", []) or []
+            )
+            out.append(job(
+                "Landing.jobs", item.get("title"), item.get("company"),
+                locations or "Europe", item.get("url"),
+                (item.get("role_description") or "") + " " + (item.get("main_requirements") or ""),
+                item.get("published_at"),
+                remote=bool(item.get("remote")),
+                restrictions=[locations],
+                relocation=bool(item.get("relocation_paid")),
+            ))
+    return out
 
 
 class StaffLinkParser(HTMLParser):
-    """Extract job links/titles from the public Staff.am QA category page."""
+    """Pull job links off the public Staff.am quality-assurance category page."""
+
     def __init__(self):
         super().__init__()
         self.current_href = None
-        self.capture_depth = 0
-        self.title_parts = []
+        self.depth = 0
+        self.parts = []
         self.items = []
 
     def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        href = attrs.get("href", "")
+        href = dict(attrs).get("href", "")
         if tag == "a" and href.startswith("/en/jobs/quality-assurance/"):
             self.current_href = href
-            self.capture_depth = 1
-            self.title_parts = []
+            self.depth = 1
+            self.parts = []
         elif self.current_href:
-            self.capture_depth += 1
+            self.depth += 1
 
     def handle_data(self, data):
         if self.current_href:
-            self.title_parts.append(data)
+            self.parts.append(data)
 
     def handle_endtag(self, tag):
         if self.current_href:
-            self.capture_depth -= 1
-            if self.capture_depth <= 0:
-                title = clean_text(" ".join(self.title_parts))
-                if title and self.current_href:
+            self.depth -= 1
+            if self.depth <= 0:
+                title = clean_text(" ".join(self.parts))
+                if title:
                     self.items.append((self.current_href, title))
                 self.current_href = None
-                self.title_parts = []
+                self.parts = []
 
 
-LINKEDIN_SEARCHES = [
-    ("QA Engineer", "Europe", "2"),
-    ("QA Automation Engineer", "Europe", "2"),
-    ("Manual QA", "Europe", "2"),
-    ("API QA", "Europe", "2"),
-    ("QA Engineer", "Armenia", "1"),
-]
-
-
-def parse_linkedin():
-    """Read public, no-login LinkedIn job-search pages.
-
-    f_WT=2 is LinkedIn's public remote-work filter and f_WT=1 is on-site.
-    This does not log in, use cookies, or access the user's account.
-    """
-    jobs = []
-    card_re = re.compile(r'<div[^>]+class="[^"]*job-search-card[^"]*".*?</li>', re.I | re.S)
-    link_re = re.compile(r'<a[^>]+class="[^"]*base-card__full-link[^"]*"[^>]+href="([^"]+)"', re.I | re.S)
-    title_re = re.compile(r'<h3[^>]*>(.*?)</h3>', re.I | re.S)
-    company_re = re.compile(r'<h4[^>]*>(.*?)</h4>', re.I | re.S)
-    location_re = re.compile(r'<span[^>]+class="[^"]*job-search-card__location[^"]*"[^>]*>(.*?)</span>', re.I | re.S)
-    date_re = re.compile(r'<time[^>]+datetime="([^"]+)"[^>]*>(.*?)</time>', re.I | re.S)
-    for keywords, location, work_type in LINKEDIN_SEARCHES:
-        params = urllib.parse.urlencode({
-            "keywords": keywords,
-            "location": location,
-            "f_TPR": "r86400",
-            "f_WT": work_type,
-        })
-        url = "https://www.linkedin.com/jobs/search/?" + params
-        try:
-            raw = fetch(url).decode("utf-8", "replace")
-        except Exception as exc:
-            print(f"LinkedIn ({keywords}, {location}): skipped ({exc})")
-            continue
-        for card in card_re.findall(raw):
-            link_match = link_re.search(card)
-            title_match = title_re.search(card)
-            if not link_match or not title_match:
-                continue
-            link = html.unescape(link_match.group(1)).split("?")[0]
-            title = clean_text(title_match.group(1))
-            company_match = company_re.search(card)
-            location_match = location_re.search(card)
-            date_match = date_re.search(card)
-            company = clean_text(company_match.group(1)) if company_match else "Not listed"
-            job_location = clean_text(location_match.group(1)) if location_match else location
-            published = clean_text(date_match.group(2)) if date_match else ""
-            job = make_job(
-                "LinkedIn", title, company, job_location, link,
-                f"Public LinkedIn search result for {keywords} in {location}", published,
-            )
-            job["remote"] = work_type == "2"
-            job["scope"] = "europe_remote" if work_type == "2" else "armenia_onsite"
-            jobs.append(job)
-    return jobs
-
-
-def parse_staff():
+def parse_staff_am():
+    """Armenia, on-site. Kept as its own tier because it needs no relocation."""
     raw = fetch("https://staff.am/en/jobs/quality-assurance").decode("utf-8", "replace")
     parser = StaffLinkParser()
     parser.feed(raw)
+    out = []
     seen = set()
-    jobs = []
     for href, title in parser.items:
         if href in seen:
             continue
         seen.add(href)
-        # Staff.am exposes the work mode on each job detail page. Keep
-        # Armenian on-site roles for this radar; European roles come from
-        # the remote sources below.
+        company = "Armenia employer"
         try:
             detail = fetch("https://staff.am" + href).decode("utf-8", "replace")
             remote_match = re.search(r'"is_remote":(true|false)', detail)
-            is_remote = remote_match and remote_match.group(1) == "true"
+            is_remote = bool(remote_match and remote_match.group(1) == "true")
+            description = clean_text(detail)[:3000]
+            # The page title is "Company | Job title (code)"
+            title_match = re.search(r"<title>([^<]{3,200})</title>", detail, re.I)
+            if title_match:
+                page_title = clean_text(title_match.group(1))
+                if "|" in page_title:
+                    candidate = page_title.split("|")[0].strip()
+                    if candidate and candidate.lower() != "staff.am":
+                        company = candidate
         except Exception:
-            is_remote = None
-        if is_remote is not False:
+            is_remote = False
+            description = ""
+        out.append(job(
+            "Staff.am", title, company,
+            "Yerevan, Armenia (remote)" if is_remote else "Yerevan, Armenia (on-site)",
+            "https://staff.am" + href, description,
+            remote=is_remote, restrictions=["armenia"],
+        ))
+    return out
+
+
+def parse_djinni():
+    """Djinni publishes schema.org JobPosting JSON-LD. Eastern Europe, often remote."""
+    out = []
+    seen_urls = set()
+    for keyword in ("QA", "QA Automation", "Manual QA", "Test Automation"):
+        try:
+            url = ("https://djinni.co/jobs/?primary_keyword="
+                   + urllib.parse.quote(keyword) + "&page=1")
+            raw = fetch(url).decode("utf-8", "replace")
+        except Exception:
             continue
-        job = make_job("Staff.am", title, "Armenia employer", "Yerevan / Armenia (on-site)", href)
-        job["remote"] = False
-        jobs.append(job)
-    return jobs
+        for block in re.findall(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>',
+                                raw, re.S):
+            if "JobPosting" not in block:
+                continue
+            try:
+                data = json.loads(block.strip())
+            except Exception:
+                continue
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if not isinstance(item, dict) or item.get("@type") != "JobPosting":
+                    continue
+                link = item.get("url", "")
+                if not link or link in seen_urls:
+                    continue
+                seen_urls.add(link)
+                req = item.get("applicantLocationRequirements") or {}
+                country = ""
+                if isinstance(req, dict):
+                    country = (req.get("address") or {}).get("addressCountry", "")
+                elif isinstance(req, list):
+                    country = " ".join(
+                        ((r.get("address") or {}).get("addressCountry", "") if isinstance(r, dict) else "")
+                        for r in req
+                    )
+                is_remote = item.get("jobLocationType") == "TELECOMMUTE"
+                org = item.get("hiringOrganization") or {}
+                out.append(job(
+                    "Djinni", item.get("title"), org.get("name", ""),
+                    ("Remote" if is_remote else "On-site") + (f" ({country})" if country else ""),
+                    link, strip_tags(item.get("description", "")),
+                    item.get("datePosted"),
+                    remote=is_remote,
+                    restrictions=[country] if country else [],
+                ))
+    return out
 
 
-def is_relevant(job):
-    title = job['title'].lower()
-    text = f"{job['title']} {job['description']}".lower()
-    if any(term in text for term in EXCLUDE_TERMS):
-        return False
-    # Require a QA/testing signal in the job title. This prevents unrelated
-    # jobs whose descriptions merely mention testing or APIs from being sent.
-    title_terms = [
-        'qa', 'quality assurance', 'software tester', 'test engineer', 'sdet',
-        'manual test', 'automation test', 'test automation', 'quality engineer',
-    ]
-    return any(term in title for term in title_terms)
+SOURCES = [
+    ("Himalayas", parse_himalayas),
+    ("Djinni", parse_djinni),
+    ("Remotive", parse_remotive),
+    ("Jobicy", parse_jobicy),
+    ("Working Nomads", parse_workingnomads),
+    ("We Work Remotely", parse_weworkremotely),
+    ("Remote OK", parse_remoteok),
+    ("Landing.jobs", parse_landingjobs),
+    ("Arbeitnow", parse_arbeitnow),
+    ("Staff.am", parse_staff_am),
+]
 
 
-def in_requested_scope(job):
-    # Requested scope: on-site Armenia + remote jobs open to Europe.
-    if job["source"] == "Staff.am":
-        return job.get("remote") is False and "armenia" in job["location"].lower()
-    if job["source"] == "LinkedIn":
-        return job.get("scope") == "europe_remote" or job.get("scope") == "armenia_onsite"
-    if job.get("remote") is not True:
-        return False
-    location = job["location"].lower()
-    return any(term in location for term in EUROPE_TERMS)
+# --------------------------------------------------------------------------- #
+# Filtering and scoring
+# --------------------------------------------------------------------------- #
+
+def haystack(job_):
+    return f"{job_['title']} {job_['description']} {job_['location']}".lower()
 
 
-def preliminary_fit(job):
-    text = f"{job['title']} {job['description']}".lower()
-    matched = [term for term in RESUME_TERMS if term in text]
-    score = min(99, 45 + len(matched) * 5)
-    if any(x in text for x in ("yerevan", "armenia", "remote", "worldwide", "emea", "europe")):
-        score += 5
-    return min(score, 99), matched[:8]
+def title_says_software_qa(job_) -> bool:
+    title = job_["title"].lower()
+    return any(re.search(p, title) for p in SOFTWARE_QA_TITLE_PATTERNS)
 
 
-def job_key(job):
-    return job["url"] or (job["source"] + "|" + job["title"] + "|" + job["company"])
+def is_scam(job_) -> bool:
+    text = haystack(job_)
+    if any(name in text for name in SCAM_BLOCKLIST):
+        return True
+    return any(phrase in text for phrase in SCAM_PHRASES)
+
+
+def is_hard_excluded(job_) -> bool:
+    text = haystack(job_)
+    return any(term in text for term in HARD_EXCLUDE)
+
+
+def needs_missing_language(job_) -> bool:
+    text = haystack(job_)
+    if any(term in text for term in LANGUAGE_BLOCKERS):
+        return True
+    title = job_["title"].lower()
+    return any(hint in title for hint in FOREIGN_TITLE_HINTS)
+
+
+def open_to_armenia(job_) -> bool:
+    """Can someone sitting in Yerevan take this job without moving country?"""
+    if job_["source"] == "Staff.am":
+        return True
+    text = " ".join(job_["restrictions"] + [job_["location"]]).lower()
+    if not text.strip():
+        return not job_["remote"] is False  # unknown + remote counts
+    if any(marker in text for marker in REMOTE_OPEN_MARKERS):
+        return True
+    # A restriction list naming Europe or Armenia
+    return any(country in text for country in EUROPE_COUNTRIES)
+
+
+def is_armenia(job_) -> bool:
+    text = " ".join([job_["location"]] + job_["restrictions"]).lower()
+    return "armenia" in text or "yerevan" in text
+
+
+def wants_sponsorship(job_) -> bool:
+    text = haystack(job_)
+    return job_["relocation"] or any(marker in text for marker in SPONSORSHIP_MARKERS)
+
+
+def assign_tier(job_):
+    """Returns 1, 2, 3 or None."""
+    if is_armenia(job_):
+        return 2
+    if job_["remote"] and open_to_armenia(job_):
+        return 1
+    if not job_["remote"] and wants_sponsorship(job_):
+        # On-site, but they say they will move you.
+        return 3
+    if job_["remote"] and not job_["restrictions"]:
+        return 1
+    return None
+
+
+# Ahmad has five years, so trainee and junior postings are a step backwards and
+# principal or architect postings are a stretch. Middle and senior fit best.
+LEVEL_BELOW = ["trainee", "intern", "junior", "entry level", "graduate", "apprentice"]
+LEVEL_ABOVE = ["principal", "architect", "head of", "director", "vp ", "staff "]
+LEVEL_GOOD = ["middle", "senior", "regular", "strong", "lead", "engineer", "sdet"]
+
+
+def level_adjustment(job_) -> int:
+    title = job_["title"].lower()
+    if any(w in title for w in LEVEL_BELOW):
+        return -18
+    if any(w in title for w in LEVEL_ABOVE):
+        return -8
+    if any(w in title for w in LEVEL_GOOD):
+        return 4
+    return 0
+
+
+def relevance_score(job_) -> int:
+    text = haystack(job_)
+    matched = [s for s in dict.fromkeys(QA_SKILLS) if s in text]
+    score = 40 + len(matched) * 4
+    if any(w in text for w in ("playwright", "postman", "api testing", "regression")):
+        score += 8
+    if any(w in text for w in ("manual", "exploratory", "test case", "jira")):
+        score += 6
+    if "5+" in text or "4+" in text or "3+ years" in text:
+        score += 4
+    score += level_adjustment(job_)
+    return max(20, min(score, 97))
+
+
+def matched_skills(job_):
+    text = haystack(job_)
+    return [s for s in dict.fromkeys(QA_SKILLS) if s in text][:8]
+
+
+# --------------------------------------------------------------------------- #
+# State
+# --------------------------------------------------------------------------- #
+
+def job_key(job_):
+    return job_["url"] or f"{job_['source']}|{job_['title']}|{job_['company']}"
 
 
 def load_seen():
@@ -296,9 +620,12 @@ def load_seen():
 
 
 def save_seen(seen):
-    # Keep the state file compact while retaining the newest-ish 2,000 keys.
-    STATE_FILE.write_text(json.dumps(list(seen)[-2000:], ensure_ascii=False, indent=2))
+    STATE_FILE.write_text(json.dumps(list(seen)[-3000:], ensure_ascii=False, indent=2))
 
+
+# --------------------------------------------------------------------------- #
+# Telegram
+# --------------------------------------------------------------------------- #
 
 def telegram_send(text):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -307,121 +634,165 @@ def telegram_send(text):
     if not CHAT_ID:
         raise RuntimeError("TELEGRAM_CHAT_ID is not set")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": "false"}).encode()
-    req = urllib.request.Request(url, data=data, method="POST")
+    payload = urllib.parse.urlencode({
+        "chat_id": CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": "false",
+    }).encode()
+    req = urllib.request.Request(url, data=payload, method="POST")
     with urllib.request.urlopen(req, timeout=30) as response:
         result = json.loads(response.read().decode("utf-8"))
     if not result.get("ok"):
         raise RuntimeError(result)
 
 
-def format_job(job):
-    score, matched = preliminary_fit(job)
-    matched_text = ", ".join(matched) if matched else "general QA keywords"
-    scope_label = "🇦🇲 Armenia / On-site" if (job["source"] == "Staff.am" or job.get("scope") == "armenia_onsite") else "🌍 Europe / Remote"
-    return (
-        "🆕 QA Job Radar\n\n"
-        f"{job['title']}\n"
-        f"Type: {scope_label}\n"
-        f"Company: {job['company']}\n"
-        f"Location: {job['location']}\n"
-        f"Source: {job['source']}\n"
-        f"Preliminary fit: {score}%\n"
-        f"Matched keywords: {matched_text}\n\n"
-        f"Apply: {job['url']}"
-    )
+NEEDS_CHECK_COUNTRIES = [
+    "ua", "ukraine", "poland", "pl", "germany", "de", "spain", "es",
+    "portugal", "pt", "italy", "it", "belgium", "be", "france", "fr",
+]
 
 
-def format_cover_letter(job):
-    """Create a short, factual cover-letter draft without an external AI API."""
-    _, matched = preliminary_fit(job)
-    display = {
-        "playwright": "Playwright", "selenium": "Selenium", "appium": "Appium",
-        "postman": "Postman", "swagger": "Swagger", "python": "Python",
-        "javascript": "JavaScript", "sql": "SQL", "gitlab": "GitLab CI/CD",
-        "github actions": "CI/CD", "jira": "Jira", "testrail": "TestRail",
-        "xray": "Xray", "jmeter": "JMeter", "api": "API testing",
-        "mobile": "mobile testing", "web": "web testing", "regression": "regression testing",
-        "integration": "integration testing",
-    }
-    skills = [display.get(term, term.title()) for term in matched[:4]]
-    skills_text = ", ".join(skills) if skills else "manual, web, mobile, and API testing"
-    company = job["company"] if job["company"] != "Not listed" else "Hiring Team"
-    return (
-        "📝 Cover Letter Draft\n\n"
-        f"Hi {company} team,\n\n"
-        f"I’m interested in the {job['title']} role. I have around five years of experience in manual and automated testing for web, mobile, and API-based applications. My background includes {skills_text}, as well as test documentation, defect tracking, and CI/CD.\n\n"
-        "I’d be glad to bring this experience to your team and learn more about the product. Thank you for your time and consideration.\n\n"
-        "Best regards,\nAhmad Zarei"
-    )
+def location_caveat(job_) -> str:
+    """Returns a warning line when the posting restricts who it will hire."""
+    text = " ".join(job_["restrictions"] + [job_["location"]]).lower()
+    if not text.strip():
+        return ""
+    if any(m in text for m in ("worldwide", "anywhere", "global", "emea", "europe")):
+        return ""
+    if is_armenia(job_):
+        return ""
+    if any(c in text for c in NEEDS_CHECK_COUNTRIES):
+        return "Check the location rule: this one names a country. Some of these hire across Eastern Europe, some do not."
+    return ""
 
 
-def collect_jobs():
-    sources = [
-        ("LinkedIn", parse_linkedin),
-        ("Remote OK", parse_remoteok),
-        ("Remotive", parse_remotive),
-        ("Jobicy", parse_jobicy),
-        ("Staff.am", parse_staff),
+TIER_BADGE = {
+    1: "🥇 Remote — open to Europe",
+    2: "🥈 Armenia",
+    3: "🥉 On-site EU — sponsorship mentioned",
+}
+
+
+def format_job(job_, tier):
+    skills = ", ".join(matched_skills(job_)) or "general QA"
+    lines = [
+        f"{TIER_BADGE[tier]}",
+        "",
+        job_["title"],
+        f"Company: {job_['company']}",
+        f"Location: {job_['location']}",
+        f"Source: {job_['source']}",
+        f"Fit: {relevance_score(job_)}%  ·  {skills}",
     ]
+    caveat = location_caveat(job_)
+    if caveat:
+        lines.append(caveat)
+    if tier == 3:
+        lines.append("On-site. They mention visa or relocation support, confirm it before applying.")
+    return "\n".join(lines) + f"\n\nApply: {job_['url']}"
+
+
+# --------------------------------------------------------------------------- #
+# Main run
+# --------------------------------------------------------------------------- #
+
+def collect():
     all_jobs = []
-    for name, parser in sources:
+    for name, parser in SOURCES:
         try:
-            all_jobs.extend(parser())
-            print(f"{name}: loaded")
+            found = parser()
+            all_jobs.append((name, found))
+            print(f"{name}: {len(found)} fetched")
         except Exception as exc:
-            print(f"{name}: skipped ({exc})")
-    return [job for job in all_jobs if is_relevant(job) and in_requested_scope(job) and job.get("url")]
+            print(f"{name}: skipped ({exc.__class__.__name__}: {exc})")
+
+    kept = []
+    stats = {"total": 0, "not_qa": 0, "scam_blocked": 0, "hard_excluded": 0,
+             "language": 0, "out_of_scope": 0, "kept": 0}
+    for _, jobs in all_jobs:
+        for j in jobs:
+            stats["total"] += 1
+            if not j["url"]:
+                continue
+            if not title_says_software_qa(j):
+                stats["not_qa"] += 1
+                continue
+            if is_scam(j):
+                stats["scam_blocked"] += 1
+                continue
+            if is_hard_excluded(j):
+                stats["hard_excluded"] += 1
+                continue
+            if needs_missing_language(j):
+                stats["language"] += 1
+                continue
+            tier = assign_tier(j)
+            if tier is None:
+                stats["out_of_scope"] += 1
+                continue
+            j["tier"] = tier
+            j["score"] = relevance_score(j)
+            kept.append(j)
+            stats["kept"] += 1
+    print("Filter stats:", stats)
+    return kept, stats
 
 
-def run_once(dry_run=False):
+def run(dry_run=False, report=False):
     seen = load_seen()
-    jobs = collect_jobs()
-    new_jobs = []
-    queued_keys = set()
-    for job in jobs:
-        key = job_key(job)
-        if key not in seen and key not in queued_keys:
-            new_jobs.append(job)
-            queued_keys.add(key)
-    # Send the most relevant jobs first, but do not mark queued jobs as seen
-    # until they have actually been sent. This prevents losing jobs when a
-    # large batch arrives at once.
-    new_jobs.sort(key=lambda j: preliminary_fit(j)[0], reverse=True)
+    jobs, stats = collect()
+
+    if report:
+        print(f"\n{len(jobs)} jobs passed the filters\n")
+        for j in sorted(jobs, key=lambda x: (x["tier"], -x["score"])):
+            print(f"[tier {j['tier']}] {j['score']}%  {j['title']}  @ {j['company']}  ({j['location']})")
+        return
+
+    new = [j for j in jobs if job_key(j) not in seen]
+    # Tier first, then score inside the tier.
+    new.sort(key=lambda x: (x["tier"], -x["score"]))
+    for j in new:
+        seen.add(job_key(j))
+
     if dry_run:
-        print(f"Found {len(jobs)} relevant jobs; {len(new_jobs)} are new.")
-        for job in new_jobs[:10]:
-            print("\n" + format_job(job))
-    else:
-        sent_count = 0
-        for job in new_jobs[:10]:
-            # Send the job details and its cover-letter draft in one message
-            # so the alert is faster and easier to use.
-            telegram_send(format_job(job) + "\n\n" + format_cover_letter(job))
-            seen.add(job_key(job))
-            save_seen(seen)
-            sent_count += 1
-        remaining = len(new_jobs) - sent_count
-        if remaining > 0:
-            telegram_send(f"ℹ️ {remaining} more new QA jobs are queued for the next scan.")
-        print(f"Sent {sent_count} new job(s). {remaining} remain queued.")
+        print(f"\n{len(new)} new job(s) would be sent\n")
+        for j in new[:MAX_PER_RUN]:
+            print("=" * 60)
+            print(format_job(j, j["tier"]))
+            print()
+        return
+
+    sent = 0
+    for j in new[:MAX_PER_RUN]:
+        try:
+            telegram_send(format_job(j, j["tier"]))
+            sent += 1
+            time.sleep(1)
+        except Exception as exc:
+            print(f"Send failed for {j['title']}: {exc}")
+    if len(new) > MAX_PER_RUN:
+        try:
+            telegram_send(f"ℹ️ {len(new) - MAX_PER_RUN} more matched. They will come through on the next run.")
+        except Exception:
+            pass
+    save_seen(seen)
+    print(f"Sent {sent} of {len(new)} new job(s).")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true", help="Run one scan and exit")
-    parser.add_argument("--dry-run", action="store_true", help="Scan and print; do not send Telegram messages")
+    parser.add_argument("--once", action="store_true", help="scan once and send to Telegram")
+    parser.add_argument("--dry-run", action="store_true", help="scan once, print only")
+    parser.add_argument("--report", action="store_true", help="print everything that passed, grouped by tier")
     args = parser.parse_args()
-    if args.once or args.dry_run:
-        run_once(dry_run=args.dry_run)
-        return
-    print(f"QA Job Radar running every {POLL_SECONDS} seconds. Press Ctrl+C to stop.")
-    while True:
-        try:
-            run_once(dry_run=False)
-        except Exception as exc:
-            print(f"Scan error: {exc}")
-        time.sleep(POLL_SECONDS)
+
+    if args.report:
+        run(report=True)
+    elif args.dry_run or args.once:
+        run(dry_run=args.dry_run)
+    else:
+        print("Run with --once, --dry-run or --report. Nothing was sent.")
+        parser.print_help()
 
 
 if __name__ == "__main__":
