@@ -2,12 +2,22 @@ name: QA Job Radar
 
 on:
   schedule:
-    # GitHub can delay scheduled runs. 15 minutes is the practical interval.
-    - cron: '*/15 * * * *'
+    # Six times a day, in Yerevan time (UTC+4).
+    #   05:00 UTC = 09:00 Yerevan
+    #   08:00 UTC = 12:00 Yerevan
+    #   11:00 UTC = 15:00 Yerevan
+    #   14:00 UTC = 18:00 Yerevan
+    #   17:00 UTC = 21:00 Yerevan
+    #   23:00 UTC = 03:00 Yerevan  (last sweep of the night)
+    - cron: '0 5,8,11,14,17,23 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
         description: 'Scan and print only, do not send to Telegram'
+        type: boolean
+        default: false
+      no_documents:
+        description: 'Skip the PDF resume and cover letter, text alerts only'
         type: boolean
         default: false
 
@@ -21,7 +31,7 @@ concurrency:
 jobs:
   scan-and-send:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -31,10 +41,16 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Scan sources and send new jobs to Telegram
+      # reportlab builds the resume and cover letter PDFs.
+      # It is the only dependency; everything else is standard library.
+      - name: Install PDF dependency
+        run: pip install --quiet reportlab
+
+      - name: Scan sources, send alerts and tailored documents
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOB_RADAR_TAILOR: ${{ inputs.no_documents == 'true' && '0' || '1' }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             python job_radar.py --dry-run
@@ -57,7 +73,6 @@ jobs:
   sync-to-sheet:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: []
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -67,8 +82,8 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Install crypto for the service account login
-        run: pip install --quiet cryptography
+      - name: Install dependencies
+        run: pip install --quiet cryptography reportlab
 
       - name: Dump the radar results to JSON
         run: python job_radar.py --json

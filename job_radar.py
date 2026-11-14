@@ -28,6 +28,7 @@ import html
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -973,6 +974,49 @@ def telegram_send(text):
         raise RuntimeError(result)
 
 
+def telegram_send_document(pdf_path, caption=""):
+    """Sends a PDF. Separate from sendMessage because the endpoint and the
+    multipart body are different, and because a failed document must never stop
+    the text alert from going out.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token or not CHAT_ID:
+        raise RuntimeError("Telegram credentials are not set")
+
+    boundary = "----QAJobRadarBoundary"
+    path = Path(pdf_path)
+    data = path.read_bytes()
+    filename = path.name[:60]
+
+    parts = []
+    def field(name, value):
+        parts.append(
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+            f"{value}\r\n".encode()
+        )
+
+    field("chat_id", CHAT_ID)
+    if caption:
+        field("caption", caption[:900])
+    parts.append(
+        (f"--{boundary}\r\n"
+         f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'
+         f"Content-Type: application/pdf\r\n\r\n").encode() + data + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+
+    body = b"".join(parts)
+    url = f"https://api.telegram.org/bot{token}/sendDocument"
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+    })
+    with urllib.request.urlopen(req, timeout=60) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    if not result.get("ok"):
+        raise RuntimeError(result)
+
+
 TIER_BADGE = {
     1: "🇦🇲 Armenia — on-site or remote",
     2: "🌍 Remote, open",
@@ -1250,6 +1294,10 @@ def run(dry_run=False, report=False, dump_json=False):
     new = trim_to_caps(new)
 
     sent = 0
+    tailor_enabled = os.getenv("JOB_RADAR_TAILOR", "1") == "1"
+    tailor_dir = Path("/tmp/tailored")
+    tailor_error_shown = False
+
     for j in new[:MAX_PER_RUN]:
         try:
             telegram_send(format_job(j, j["tier"]))
@@ -1257,6 +1305,27 @@ def run(dry_run=False, report=False, dump_json=False):
             time.sleep(1)
         except Exception as exc:
             print(f"Send failed for {j['title']}: {exc}")
+            continue
+
+        # Resume and cover letter, generated for this specific posting.
+        if not tailor_enabled:
+            continue
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from tailor import tailor as build_documents
+            resume_pdf, letter_pdf = build_documents(j, tailor_dir)
+            caption = f"{j['title']} at {j['company']}"
+            telegram_send_document(resume_pdf, caption)
+            time.sleep(0.5)
+            telegram_send_document(letter_pdf, caption)
+            time.sleep(0.5)
+            print(f"  documents sent for {j['company']}")
+        except Exception as exc:
+            # A failure here must not cost him the job alert, so it is logged once
+            # and then the loop carries on.
+            if not tailor_error_shown:
+                print(f"  document generation unavailable: {type(exc).__name__}: {exc}")
+                tailor_error_shown = True
     if len(new) > MAX_PER_RUN:
         try:
             telegram_send(f"ℹ️ {len(new) - MAX_PER_RUN} more matched. They will come through on the next run.")
