@@ -24,8 +24,10 @@ on:
 permissions:
   contents: write
 
+# One run at a time. The previous value allowed overlapping runs, which is how
+# two copies ended up racing to commit the same state file.
 concurrency:
-  group: job-radar
+  group: job-radar-state
   cancel-in-progress: false
 
 jobs:
@@ -60,15 +62,33 @@ jobs:
 
       - name: Save seen-job state
         run: |
-          if [ -n "$(git status --porcelain -- seen_jobs.json)" ]; then
-            git config user.name "qa-job-radar[bot]"
-            git config user.email "qa-job-radar[bot]@users.noreply.github.com"
-            git add seen_jobs.json
-            git commit -m "Update seen QA jobs"
-            git push
-          else
+          if [ -z "$(git status --porcelain -- seen_jobs.json)" ]; then
             echo "No state changes to commit."
+            exit 0
           fi
+
+          git config user.name "qa-job-radar[bot]"
+          git config user.email "qa-job-radar[bot]@users.noreply.github.com"
+          git add seen_jobs.json
+          git commit -m "Update seen QA jobs"
+
+          # Two runs can overlap, and the second push then gets rejected with
+          # "fetch first". Pull with rebase and retry a few times rather than
+          # failing the whole run over a state file.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "Push rejected on attempt $attempt, rebasing and retrying"
+            git pull --rebase --autostash origin main || true
+            sleep $((attempt * 3))
+          done
+
+          echo "Could not push the state file after five attempts."
+          echo "The alerts went out, so the only consequence is that the next run"
+          echo "may resend a few jobs you have already seen. Not worth failing over."
+          exit 0
 
   sync-to-sheet:
     runs-on: ubuntu-latest
