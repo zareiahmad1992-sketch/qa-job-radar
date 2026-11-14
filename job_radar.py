@@ -994,6 +994,30 @@ def tier_note(job_, tier) -> str:
     return TIER_NOTE.get(tier, "")
 
 
+def format_heartbeat(stats, new_count, sent_count, sources):
+    """A short status line, so a quiet day is visibly quiet rather than suspicious.
+
+    Without this, "no message" could mean three different things: no new jobs, a
+    broken source, or a dead job. This says which.
+    """
+    lines = ["🔍 QA Job Radar ran", ""]
+    lines.append(f"Scanned {stats.get('total', 0)} postings from {len(sources)} sources")
+    lines.append(f"Passed filters: {stats.get('kept', 0)}")
+    lines.append(f"New since last run: {new_count}")
+    if sent_count:
+        lines.append(f"Sent: {sent_count}")
+    else:
+        lines.append("Sent: none, everything new has already been posted")
+
+    # Say plainly when a source returned nothing, because that is the failure that
+    # hides best.
+    dead = [name for name, count in sources.items() if count == 0]
+    if dead:
+        lines.append("")
+        lines.append("Sources that returned nothing: " + ", ".join(dead))
+    return "\n".join(lines)
+
+
 def format_job(job_, tier):
     skills = ", ".join(matched_skills(job_)) or "general QA"
     if has_description(job_):
@@ -1074,12 +1098,15 @@ def dedup_signature(j):
 
 def collect():
     all_jobs = []
+    source_counts = {}
     for name, parser in SOURCES:
         try:
             found = parser()
             all_jobs.append((name, found))
+            source_counts[name] = len(found)
             print(f"{name}: {len(found)} fetched")
         except Exception as exc:
+            source_counts[name] = 0
             print(f"{name}: skipped ({exc.__class__.__name__}: {exc})")
 
     kept = []
@@ -1158,6 +1185,7 @@ def collect():
     stats["duplicates_removed"] = duplicates
     kept = list(final.values())
     stats["kept"] = len(kept)
+    stats["sources"] = source_counts
     print("Filter stats:", stats)
     return kept, stats
 
@@ -1234,6 +1262,12 @@ def run(dry_run=False, report=False, dump_json=False):
             telegram_send(f"ℹ️ {len(new) - MAX_PER_RUN} more matched. They will come through on the next run.")
         except Exception:
             pass
+    if os.getenv("JOB_RADAR_HEARTBEAT", "1") == "1":
+        try:
+            telegram_send(format_heartbeat(stats, len(new), sent, stats.get("sources", {})))
+        except Exception as exc:
+            print(f"Heartbeat failed: {exc}")
+
     save_seen(seen)
     print(f"Sent {sent} of {len(new)} new job(s).")
 
