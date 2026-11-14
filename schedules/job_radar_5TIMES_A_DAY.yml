@@ -1,0 +1,94 @@
+name: QA Job Radar
+
+on:
+  schedule:
+    # Five times a day, in Yerevan time (UTC+4).
+    #   05:00 UTC = 09:00 Yerevan  - morning
+    #   08:00 UTC = 12:00 Yerevan  - midday
+    #   11:00 UTC = 15:00 Yerevan  - afternoon
+    #   14:00 UTC = 18:00 Yerevan  - end of working day
+    #   17:00 UTC = 21:00 Yerevan  - evening
+    #
+    # Why not every 15 minutes: each run makes about eleven requests to LinkedIn,
+    # and 96 runs a day is over a thousand requests from a single IP address. That
+    # is how the guest endpoint starts returning 999 and the source quietly dies.
+    # Five runs a day is 55 requests, which it tolerates comfortably.
+    - cron: '0 5,8,11,14,17 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Scan and print only, do not send to Telegram'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: job-radar
+  cancel-in-progress: false
+
+jobs:
+  scan-and-send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Scan sources and send new jobs to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python job_radar.py --dry-run
+          else
+            python job_radar.py --once
+          fi
+
+      - name: Save seen-job state
+        run: |
+          if [ -n "$(git status --porcelain -- seen_jobs.json)" ]; then
+            git config user.name "qa-job-radar[bot]"
+            git config user.email "qa-job-radar[bot]@users.noreply.github.com"
+            git add seen_jobs.json
+            git commit -m "Update seen QA jobs"
+            git push
+          else
+            echo "No state changes to commit."
+          fi
+
+  sync-to-sheet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install crypto for the service account login
+        run: pip install --quiet cryptography
+
+      - name: Dump the radar results to JSON
+        run: python job_radar.py --json
+
+      - name: Append new jobs to the Google Sheet
+        env:
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "No service account configured, skipping the sheet sync."
+            exit 0
+          fi
+          python job_sheet_sync.py
