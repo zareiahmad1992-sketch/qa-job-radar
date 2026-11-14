@@ -40,8 +40,11 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 STATE_FILE = Path(__file__).with_name("seen_jobs.json")
 USER_AGENT = "Mozilla/5.0 (compatible; QAJobRadar/2.0)"
 
-# Hard cap per run so a backlog never floods the chat.
-MAX_PER_RUN = 8
+# Per-run caps so a backlog never floods the chat. Armenia and remote-open roles are
+# always worth reading; the single-country remote ones are a long tail, so only the
+# strongest few go out each run.
+MAX_PER_TIER = {1: 6, 2: 6, 3: 3, 4: 2}
+MAX_PER_RUN = 12
 
 
 # --------------------------------------------------------------------------- #
@@ -91,6 +94,12 @@ LANGUAGE_BLOCKERS = [
     "nederlands", "dutch required", "fluent dutch", "estonian required",
     "fluent french", "french required", "fluent spanish required",
     "italiano madrelingua", "polski wymagany",
+    # Demands for a native speaker of a language Ahmad does not have. These come
+    # straight out of the Djinni listing fields, which is why they were missed.
+    "ukrainian — native", "ukrainian native", "ukrainian - native",
+    "russian — native", "russian native", "russian - native",
+    "polish — native", "polish native", "polish - native",
+    "native ukrainian", "native russian", "native polish",
 ]
 
 # Companies that ask applicants for money, sell training, or are otherwise not
@@ -106,6 +115,20 @@ SCAM_PHRASES = [
     "paid training", "training fee", "placement fee", "registration fee",
     "security deposit", "purchase your own equipment", "unpaid training period",
     "investment required", "pay to start",
+]
+
+# Phrases that mean the employer will only hire in one named country. These are
+# checked against the whole posting, and a match is fatal unless Armenia is named.
+COUNTRY_LOCK_MARKERS = [
+    "ukraine-based role", "ukraine based role", "located in ukraine",
+    "located in kyiv", "located in lviv", "located in poltava", "located in kharkiv",
+    "kyiv or poltava", "kyiv or lviv", "lviv or kyiv",
+    "only consider candidates", "only considering candidates",
+    "countries we consider candidates", "candidates located in",
+    "we are looking for candidates located", "must be located in",
+    "must be based in", "only candidates from", "only residents of",
+    "us work authorization", "authorized to work in the us",
+    "eu work permit required", "must have the right to work in the eu",
 ]
 
 # A title written in these languages is a strong sign the interview is too.
@@ -131,29 +154,85 @@ QA_SKILLS = [
     "android", "ios", "mobile testing", "devtools",
 ]
 
-# Places that mean the job is open to someone sitting in Yerevan.
-REMOTE_OPEN_MARKERS = [
-    "worldwide", "anywhere", "global", "emea", "europe", "european",
-    "eu only", "eu-based", "european union", "remote", "international",
-    "any country", "anywhere in the world",
+# --------------------------------------------------------------------------- #
+# Geography
+#
+# Ahmad lives in Yerevan. He has no EU work permit. That makes the realistic
+# paths narrow, and they are not equal:
+#
+#   1  Armenia, on-site or remote        he can start next week, nothing to arrange
+#   2  Remote, genuinely open            worldwide / EMEA / Europe with no single
+#                                        country named. Contractor or EOR, workable
+#   3  Remote, one European country      "Remote (Poland)" means they expect you in
+#                                        Poland. Sometimes negotiable, often not
+#   4  On-site Europe + sponsorship      real, but a visa takes months
+#
+# Anything else is dropped. A posting that will not hire outside a country Ahmad
+# does not live in is worthless no matter how well the skills match.
+# --------------------------------------------------------------------------- #
+
+ARMENIA_MARKERS = ["armenia", "yerevan", "հայաստան", "ереван"]
+
+# Remote wording that genuinely means "wherever you are".
+REMOTE_WORLDWIDE = [
+    "worldwide", "anywhere in the world", "anywhere", "any location", "any country",
+    "work from anywhere", "globally distributed", "fully distributed", "global",
+    "remote worldwide", "remote - worldwide", "remote, worldwide",
 ]
 
-EUROPE_COUNTRIES = [
-    "armenia", "georgia", "poland", "germany", "netherlands", "belgium",
-    "luxembourg", "france", "spain", "portugal", "italy", "austria",
-    "switzerland", "czech", "czechia", "slovakia", "hungary", "romania",
-    "bulgaria", "croatia", "serbia", "slovenia", "greece", "cyprus", "malta",
-    "estonia", "latvia", "lithuania", "sweden", "norway", "denmark",
-    "finland", "iceland", "ireland", "united kingdom", "uk", "poland",
-    "ukraine", "moldova", "montenegro", "albania", "bosnia", "macedonia",
+# Remote wording tied to a region Armenia sits inside or beside.
+REMOTE_REGION = [
+    "emea", "europe", "european union", "european economic area",
+    "eastern europe", "central europe", "europe and", "europe, ", ", europe",
+    "cis", "caucasus", "south caucasus", "eurasia", "mena",
+    "middle east", "africa", "asia", "apac", "international",
 ]
+
+# Countries whose remote roles are worth reading. Deliberately excludes Ukraine
+# and Russia: the platforms that carry those postings almost always require a
+# native speaker and residency, which the language and country-lock filters then
+# spend the rest of their time rejecting.
+EUROPE_COUNTRIES = [
+    "albania", "andorra", "austria", "belgium", "bosnia", "bulgaria", "croatia",
+    "cyprus", "czech", "czechia", "denmark", "estonia", "finland", "france",
+    "germany", "greece", "hungary", "iceland", "ireland", "italy", "kosovo",
+    "latvia", "liechtenstein", "lithuania", "luxembourg", "malta", "moldova",
+    "monaco", "montenegro", "netherlands", "macedonia", "norway", "poland",
+    "portugal", "romania", "san marino", "serbia", "slovakia", "slovenia",
+    "spain", "sweden", "switzerland", "turkey", "united kingdom", "england",
+    "scotland", "wales", "georgia", "azerbaijan",
+]
+
+# Cities that show up in location fields instead of the country name. Only used
+# to decide whether an on-site role is in Europe; the country list above is still
+# what handles remote restrictions.
+EUROPE_CITIES = [
+    "berlin", "munich", "hamburg", "frankfurt", "cologne", "stuttgart", "dusseldorf",
+    "amsterdam", "rotterdam", "eindhoven", "brussels", "antwerp", "paris", "lyon",
+    "madrid", "barcelona", "valencia", "lisbon", "porto", "milan", "rome", "turin",
+    "warsaw", "krakow", "wroclaw", "prague", "brno", "bratislava", "budapest",
+    "bucharest", "cluj", "sofia", "plovdiv", "zagreb", "belgrade", "ljubljana",
+    "athens", "thessaloniki", "nicosia", "limassol", "valletta", "tallinn", "riga",
+    "vilnius", "stockholm", "gothenburg", "oslo", "copenhagen", "helsinki", "espoo",
+    "dublin", "cork", "london", "manchester", "edinburgh", "cambridge", "zurich",
+    "geneva", "basel", "vienna", "graz", "tbilisi", "baku", "chisinau",
+]
+
+# Short country codes used by APIs such as Landing.jobs and Djinni.
+COUNTRY_CODES = {
+    "at", "be", "bg", "ch", "cy", "cz", "de", "dk", "ee", "es", "fi", "fr",
+    "gr", "hr", "hu", "ie", "is", "it", "lt", "lu", "lv", "mt", "nl", "no",
+    "pl", "pt", "ro", "se", "si", "sk", "gb", "uk", "ge", "md", "rs", "tr",
+}
 
 SPONSORSHIP_MARKERS = [
     "visa sponsorship", "sponsorship available", "we sponsor", "sponsor visa",
-    "work permit", "relocation package", "relocation support", "relocation bonus",
-    "paid relocation", "relocation assistance", "we relocate", "blue card",
-    "eu blue card", "skilled worker visa", "tier 2", "certificate of sponsorship",
-    "relocation offered", "visa support",
+    "visa sponsored", "will sponsor", "sponsorship provided",
+    "work permit", "work visa", "relocation package", "relocation support",
+    "relocation bonus", "paid relocation", "relocation assistance", "we relocate",
+    "relocation offered", "relocation provided", "visa support", "visa assistance",
+    "blue card", "eu blue card", "skilled worker visa", "tier 2",
+    "certificate of sponsorship", "right to work support",
 ]
 
 
@@ -434,6 +513,91 @@ def parse_staff_am():
     return out
 
 
+def parse_linkedin():
+    """LinkedIn's public guest endpoint. No login, no API key, no cookies.
+
+    This turned out to be the single best source for Armenia. Staff.am carried five
+    Yerevan QA roles; the same search here returns seventy-five unique postings,
+    including employers that never list on Staff.am (Tabby, The Vault, Insight,
+    Siemens EDA, Broadridge, ServiceTitan).
+
+    The endpoint returns a fragment of job cards, ten at a time. It rate limits
+    politely, so the numbers below are deliberately modest.
+
+    One trap: searching location="Armenia" resolves to Armenia, Colombia. The
+    location string has to be "Yerevan, Armenia".
+    """
+    # Armenia first, because that is where nothing has to happen before he can start.
+    # Then remote roles in the European countries that actually hire contractors and
+    # remote workers from outside: Poland, Portugal, Romania, Bulgaria, the Baltics.
+    # Those postings name a country, so they land in tier 3 with a warning, but they
+    # are real opportunities and there are a hundred of them on a good day.
+    armenia_searches = [
+        ("QA", "Yerevan, Armenia"),
+        ("QA Automation", "Yerevan, Armenia"),
+        ("Test Engineer", "Yerevan, Armenia"),
+    ]
+    remote_europe_searches = [
+        ("QA Engineer", "Poland"),
+        ("QA Engineer", "Portugal"),
+        ("QA Engineer", "Romania"),
+        ("QA Engineer", "Bulgaria"),
+        ("QA Engineer", "Estonia"),
+        ("QA Engineer", "Lithuania"),
+        ("QA Engineer", "Spain"),
+        ("QA Engineer", "Netherlands"),
+    ]
+
+    out = []
+    seen = set()
+
+    plan = [(k, l, st, False) for k, l in armenia_searches for st in (0, 10, 25)]
+    plan += [(k, l, 0, True) for k, l in remote_europe_searches]
+
+    for keywords, location, start, remote_only in plan:
+        url = ("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?"
+               f"keywords={urllib.parse.quote(keywords)}"
+               f"&location={urllib.parse.quote(location)}&start={start}")
+        if remote_only:
+            url += "&f_WT=2"
+        try:
+            raw = fetch(url).decode("utf-8", "replace")
+        except Exception:
+            continue
+        cards = raw.split('data-entity-urn="urn:li:jobPosting:')
+        if len(cards) < 2:
+            continue
+        for card in cards[1:]:
+                title_m = re.search(r'base-search-card__title">\s*(.*?)\s*</h3>', card, re.S)
+                comp_m = re.search(r'base-search-card__subtitle">\s*<a[^>]*>\s*(.*?)\s*</a>', card, re.S)
+                loc_m = re.search(r'job-search-card__location">\s*(.*?)\s*</span>', card, re.S)
+                link_m = re.search(r'href="(https://[a-z]{2}\.linkedin\.com/jobs/view/[^"]+)"', card)
+                date_m = re.search(r'datetime="([^"]+)"', card)
+
+                if not link_m:
+                    continue
+                link = html.unescape(link_m.group(1)).split("?")[0]
+                if link in seen:
+                    continue
+                seen.add(link)
+
+                def grab(m):
+                    return html.unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
+
+                location_text = grab(loc_m)
+                # The f_WT=2 filter guarantees the posting is remote even when the
+                # location field only names the city, which is what LinkedIn does
+                # for "remote, based in Poland" style ads.
+                is_remote = remote_only or "remote" in location_text.lower()
+                out.append(job(
+                    "LinkedIn", grab(title_m), grab(comp_m), location_text, link,
+                    "", date_m.group(1) if date_m else "",
+                    remote=is_remote,
+                    restrictions=[location_text] if location_text else [],
+                ))
+    return out
+
+
 def parse_djinni():
     """Djinni publishes schema.org JobPosting JSON-LD. Eastern Europe, often remote."""
     out = []
@@ -484,6 +648,7 @@ def parse_djinni():
 
 
 SOURCES = [
+    ("LinkedIn", parse_linkedin),
     ("Himalayas", parse_himalayas),
     ("Djinni", parse_djinni),
     ("Remotive", parse_remotive),
@@ -530,40 +695,180 @@ def needs_missing_language(job_) -> bool:
     return any(hint in title for hint in FOREIGN_TITLE_HINTS)
 
 
-def open_to_armenia(job_) -> bool:
-    """Can someone sitting in Yerevan take this job without moving country?"""
-    if job_["source"] == "Staff.am":
-        return True
-    text = " ".join(job_["restrictions"] + [job_["location"]]).lower()
-    if not text.strip():
-        return not job_["remote"] is False  # unknown + remote counts
-    if any(marker in text for marker in REMOTE_OPEN_MARKERS):
-        return True
-    # A restriction list naming Europe or Armenia
-    return any(country in text for country in EUROPE_COUNTRIES)
+DJINNI_BAD_NATIVE = [
+    "ukrainian", "russian", "polish", "kazakh", "belarusian",
+]
+
+
+def djinni_detail_blocks(job_) -> bool:
+    """Fetches a Djinni detail page and reads the two sections the API omits.
+
+    Djinni publishes a clean JSON-LD block, but the language requirement and the
+    candidate-country rule live only in the rendered page. Four Ukrainian-only
+    postings reached the chat before this check existed, so it is worth the extra
+    request for the handful of jobs that survive the other filters.
+    """
+    try:
+        page = fetch(job_["url"]).decode("utf-8", "replace")
+    except Exception:
+        return False  # network trouble should not silently drop a good job
+
+    # Required languages block: "<name>English</name> ... <value>B1</value>"
+    lang_block = ""
+    marker = "Required languages"
+    if marker in page:
+        start = page.index(marker)
+        lang_block = clean_text(page[start:start + 2500]).lower()
+
+    if "native" in lang_block:
+        for language in DJINNI_BAD_NATIVE:
+            if language in lang_block:
+                return True
+
+    # Candidate country rule
+    text = clean_text(page).lower()
+    if "countries we consider candidates" in text:
+        idx = text.index("countries we consider candidates")
+        window = text[idx:idx + 220]
+        if "armenia" not in window:
+            return True
+
+    if any(phrase in text for phrase in (
+        "only consider candidates with experience",
+        "only consider candidates located",
+        "ukraine-based role",
+    )):
+        if "armenia" not in text:
+            return True
+
+    return False
+
+
+def locked_to_other_country(job_) -> bool:
+    """True when the posting names one country and that country is not Armenia.
+
+    This is the check that was missing. Djinni postings say "Ukraine" in a separate
+    field rather than in the body text, so four Ukrainian-only roles were reaching
+    the chat with a 97% fit score. A posting that will not hire outside Armenia's
+    own country is worthless no matter how well the skills match.
+    """
+    text = haystack(job_)
+    if "armenia" in text or "yerevan" in text:
+        return False
+    return any(marker in text for marker in COUNTRY_LOCK_MARKERS)
+
+
+def location_text(job_) -> str:
+    """Everything the posting says about where it hires, lowercased."""
+    return " ".join(job_["restrictions"] + [job_["location"]]).lower()
 
 
 def is_armenia(job_) -> bool:
-    text = " ".join([job_["location"]] + job_["restrictions"]).lower()
-    return "armenia" in text or "yerevan" in text
+    return any(m in location_text(job_) for m in ARMENIA_MARKERS)
+
+
+def named_countries(job_) -> list:
+    """Which countries the posting actually names, as opposed to vague wording."""
+    text = location_text(job_)
+    found = [c for c in EUROPE_COUNTRIES if c in text]
+    # Two-letter codes are only trustworthy when they stand alone
+    for token in re.findall(r"\b([a-z]{2})\b", text):
+        if token in COUNTRY_CODES and token not in found:
+            found.append(token)
+    return found
+
+
+REMOTE_PLAIN = ["remote", "fully remote", "remote-first", "remote first", "100% remote"]
+
+# Countries that are never reachable from Yerevan without a visa, so naming one of
+# them means the role is closed even if the word "remote" appears somewhere.
+BLOCKED_SINGLE_COUNTRIES = [
+    "united states", "usa", "u.s.", "us only", "canada", "mexico", "brazil",
+    "argentina", "india", "pakistan", "bangladesh", "nigeria", "kenya",
+    "south africa", "singapore", "japan", "china", "south korea", "australia",
+    "new zealand", "philippines", "indonesia", "malaysia", "vietnam", "thailand",
+    "ukraine", "russia", "belarus", "kazakhstan", "uzbekistan", "egypt",
+    "saudi arabia", "uae", "israel", "qatar", "kuwait", "morocco", "tunisia",
+]
+
+# Two-letter codes for the same closed countries, used inside brackets such as
+# "Remote (UA)" by Djinni and "Lisbon PT" by Landing.jobs.
+BLOCKED_COUNTRY_CODES = {"ua", "ru", "by", "kz", "uz", "us", "ca", "in", "br",
+                         "mx", "ar", "ng", "ke", "za", "sg", "jp", "cn", "kr",
+                         "au", "nz", "ph", "id", "my", "vn", "th", "il", "ae",
+                         "sa", "qa", "kw", "ma", "tn", "eg"}
+
+
+def remote_is_open(job_) -> str:
+    """How open is this remote role? Returns 'worldwide', 'region', 'single' or ''.
+
+    This replaces the old check, which looked for the word "remote" and therefore
+    matched everything, including "Remote (UA)". Wording matters more than the
+    presence of the word remote: "remote worldwide" and "remote, Poland only" are
+    not the same job.
+    """
+    text = location_text(job_)
+    if any(m in text for m in REMOTE_WORLDWIDE):
+        return "worldwide"
+    countries = named_countries(job_)
+    if any(m in text for m in REMOTE_REGION) and not countries:
+        return "region"
+    if len(countries) > 1:
+        return "region"
+    if len(countries) == 1:
+        return "single"
+    # A named country that Ahmad cannot legally work in closes the role, whatever
+    # the word "remote" is doing in the same field.
+    if any(c in text for c in BLOCKED_SINGLE_COUNTRIES):
+        return ""
+    # Same check for two-letter codes, but only in brackets or after a comma so
+    # that the "us" inside "business" does not trigger it
+    for code in re.findall(r"[(,\s]([a-z]{2})[)\s,]", text):
+        if code in BLOCKED_COUNTRY_CODES:
+            return ""
+
+    # "Remote" on its own, with no country attached, is as open as it gets
+    if any(m in text for m in REMOTE_PLAIN) or not text.strip():
+        if job_["remote"]:
+            return "worldwide"
+    return ""
 
 
 def wants_sponsorship(job_) -> bool:
-    text = haystack(job_)
-    return job_["relocation"] or any(marker in text for marker in SPONSORSHIP_MARKERS)
+    return job_["relocation"] or any(
+        marker in haystack(job_) for marker in SPONSORSHIP_MARKERS
+    )
 
 
 def assign_tier(job_):
-    """Returns 1, 2, 3 or None."""
+    """Returns 1, 2, 3, 4 or None. Lower is better.
+
+    1  Armenia, on-site or remote
+    2  Remote and genuinely open, worldwide or regional
+    3  Remote but one European country named
+    4  On-site in Europe with visa sponsorship or relocation offered
+    """
+    # Tier 1: Armenia, no relocation, no visa, start immediately
     if is_armenia(job_):
-        return 2
-    if job_["remote"] and open_to_armenia(job_):
         return 1
-    if not job_["remote"] and wants_sponsorship(job_):
-        # On-site, but they say they will move you.
-        return 3
-    if job_["remote"] and not job_["restrictions"]:
-        return 1
+
+    if job_["remote"]:
+        openness = remote_is_open(job_)
+        if openness in ("worldwide", "region"):
+            return 2
+        if openness == "single":
+            # A European country is named. Readable, but flag it.
+            if set(named_countries(job_)) & set(EUROPE_COUNTRIES):
+                return 3
+        return None
+
+    # On-site. Only worth a look when they offer to move him.
+    if wants_sponsorship(job_):
+        text = location_text(job_)
+        in_europe = (any(c in text for c in EUROPE_COUNTRIES)
+                     or any(city in text for city in EUROPE_CITIES))
+        if in_europe:
+            return 4
     return None
 
 
@@ -586,6 +891,13 @@ def level_adjustment(job_) -> int:
 
 
 def relevance_score(job_) -> int:
+    """Skill overlap, 20 to 97.
+
+    Jobs arriving without a description (LinkedIn does not serve one to a guest)
+    are scored on the title alone and capped lower, because there is genuinely less
+    evidence. Pretending otherwise would put a good Armenian role below a remote
+    role purely because of what LinkedIn chose to publish.
+    """
     text = haystack(job_)
     matched = [s for s in dict.fromkeys(QA_SKILLS) if s in text]
     score = 40 + len(matched) * 4
@@ -596,7 +908,22 @@ def relevance_score(job_) -> int:
     if "5+" in text or "4+" in text or "3+ years" in text:
         score += 4
     score += level_adjustment(job_)
+
+    if not job_["description"].strip():
+        # Title-only evidence. Base it on the title words we do have.
+        title = job_["title"].lower()
+        title_hits = [k for k in QA_SKILLS if k in title]
+        score = 52 + len(title_hits) * 6 + level_adjustment(job_)
+        if any(w in title for w in ("automation", "sdet", "aqa")):
+            score += 5
+        if any(w in title for w in ("manual", "general", "qa engineer")):
+            score += 3
+
     return max(20, min(score, 97))
+
+
+def has_description(job_) -> bool:
+    return bool(job_["description"].strip())
 
 
 def matched_skills(job_):
@@ -646,55 +973,104 @@ def telegram_send(text):
         raise RuntimeError(result)
 
 
-NEEDS_CHECK_COUNTRIES = [
-    "ua", "ukraine", "poland", "pl", "germany", "de", "spain", "es",
-    "portugal", "pt", "italy", "it", "belgium", "be", "france", "fr",
-]
-
-
-def location_caveat(job_) -> str:
-    """Returns a warning line when the posting restricts who it will hire."""
-    text = " ".join(job_["restrictions"] + [job_["location"]]).lower()
-    if not text.strip():
-        return ""
-    if any(m in text for m in ("worldwide", "anywhere", "global", "emea", "europe")):
-        return ""
-    if is_armenia(job_):
-        return ""
-    if any(c in text for c in NEEDS_CHECK_COUNTRIES):
-        return "Check the location rule: this one names a country. Some of these hire across Eastern Europe, some do not."
-    return ""
-
-
 TIER_BADGE = {
-    1: "🥇 Remote — open to Europe",
-    2: "🥈 Armenia",
-    3: "🥉 On-site EU — sponsorship mentioned",
+    1: "🇦🇲 Armenia — on-site or remote",
+    2: "🌍 Remote, open",
+    3: "🌍 Remote, one country named",
+    4: "🛂 On-site Europe, sponsorship offered",
 }
+
+TIER_NOTE = {
+    1: "",
+    2: "",
+    3: "The posting names one country. Some of these will still take a contractor "
+       "elsewhere, many will not. Worth one question before you spend time applying.",
+    4: "On-site. They mention visa sponsorship or relocation, confirm the details "
+       "before applying because the process takes months.",
+}
+
+
+def tier_note(job_, tier) -> str:
+    return TIER_NOTE.get(tier, "")
 
 
 def format_job(job_, tier):
     skills = ", ".join(matched_skills(job_)) or "general QA"
+    if has_description(job_):
+        fit_line = f"Fit: {relevance_score(job_)}%  ·  {skills}"
+    else:
+        fit_line = f"Fit: {relevance_score(job_)}% (title only)  ·  read the posting for detail"
     lines = [
-        f"{TIER_BADGE[tier]}",
+        TIER_BADGE[tier],
         "",
         job_["title"],
         f"Company: {job_['company']}",
         f"Location: {job_['location']}",
         f"Source: {job_['source']}",
-        f"Fit: {relevance_score(job_)}%  ·  {skills}",
+        fit_line,
     ]
-    caveat = location_caveat(job_)
-    if caveat:
-        lines.append(caveat)
-    if tier == 3:
-        lines.append("On-site. They mention visa or relocation support, confirm it before applying.")
+    note = tier_note(job_, tier)
+    if note:
+        lines.append("")
+        lines.append(note)
     return "\n".join(lines) + f"\n\nApply: {job_['url']}"
 
 
 # --------------------------------------------------------------------------- #
 # Main run
 # --------------------------------------------------------------------------- #
+
+COMPANY_NOISE = [
+    "armenia", "yerevan", "llc", "ltd", "gmbh", "inc", "corp", "co",
+    "limited", "group", "software", "technologies", "solutions", "sv",
+]
+
+
+def normalise_company(name):
+    """'TeamViewer Armenia' and 'TeamViewer' are the same employer to a job seeker."""
+    text = name.lower()
+    # Drop anything after a pipe, which is usually a local translation
+    text = text.split("|")[0]
+    text = re.sub(r"[^a-z0-9 ]", " ", text)
+    words = [w for w in text.split() if w and w not in COMPANY_NOISE]
+    return "".join(words)
+
+
+TITLE_SYNONYMS = {
+    "quality": "qa", "assurance": "", "tester": "", "testing": "",
+    "engineer": "", "specialist": "", "analyst": "", "manual": "",
+    "automation": "auto", "automated": "auto",
+}
+
+
+def normalise_title(title):
+    """Same posting on two boards should collapse to one.
+
+    LinkedIn says "Quality Assurance Engineer", Staff.am says "QA Engineer", and both
+    describe the same SoftConstruct role. Strip the words that carry no meaning in a
+    QA title so they compare equal, but keep "automation" and "manual" because those
+    genuinely separate one job from another at the same company.
+    """
+    text = title.lower()
+    text = re.sub(r"[^a-z0-9 ]", " ", text)
+    words = []
+    for w in text.split():
+        if w in ("junior", "middle", "senior", "lead", "principal", "intern",
+                 "internship", "sr", "jr", "ii", "iii"):
+            continue
+        words.append(TITLE_SYNONYMS.get(w, w))
+    result = " ".join(w for w in words if w)
+    # If every word was noise, fall back to the flattened original so two different
+    # postings never collapse just because both normalised to nothing.
+    if not result:
+        result = re.sub(r"[^a-z0-9]", "", title.lower())
+    return result
+
+
+def dedup_signature(j):
+    """Same job posted on Staff.am and LinkedIn should reach the chat once."""
+    return normalise_company(j["company"]) + "|" + normalise_title(j["title"])
+
 
 def collect():
     all_jobs = []
@@ -708,7 +1084,8 @@ def collect():
 
     kept = []
     stats = {"total": 0, "not_qa": 0, "scam_blocked": 0, "hard_excluded": 0,
-             "language": 0, "out_of_scope": 0, "kept": 0}
+             "language": 0, "country_locked": 0, "djinni_detail_blocked": 0,
+             "out_of_scope": 0, "kept": 0}
     for _, jobs in all_jobs:
         for j in jobs:
             stats["total"] += 1
@@ -726,6 +1103,16 @@ def collect():
             if needs_missing_language(j):
                 stats["language"] += 1
                 continue
+            if locked_to_other_country(j):
+                stats["country_locked"] += 1
+                continue
+            # Djinni hides its language and country rules in the rendered page,
+            # so this one costs an extra request. Everything else is filtered
+            # above for free, which keeps it to a handful of fetches per run.
+            if j["source"] == "Djinni" and djinni_detail_blocks(j):
+                stats["djinni_detail_blocked"] += 1
+                continue
+
             tier = assign_tier(j)
             if tier is None:
                 stats["out_of_scope"] += 1
@@ -734,18 +1121,80 @@ def collect():
             j["score"] = relevance_score(j)
             kept.append(j)
             stats["kept"] += 1
+    # One posting, one message. Keep the version with the richer description,
+    # since that is the one whose fit score means something.
+    by_sig = {}
+    duplicates = 0
+    for j in kept:
+        sig = dedup_signature(j)
+        existing = by_sig.get(sig)
+        if existing is None:
+            by_sig[sig] = j
+            continue
+        duplicates += 1
+        if len(j["description"]) > len(existing["description"]):
+            by_sig[sig] = j
+
+    # Second pass: same company, and one title contains the other
+    # ("QA Engineer" vs "QA Engineer - Manual & Automated").
+    final = {}
+    for j in by_sig.values():
+        company = normalise_company(j["company"])
+        title = normalise_title(j["title"])
+        merged = False
+        for key, existing in list(final.items()):
+            if not key.startswith(company + "|"):
+                continue
+            other = key.split("|", 1)[1]
+            if title in other or other in title:
+                merged = True
+                duplicates += 1
+                if len(j["description"]) > len(existing["description"]):
+                    final[key] = j
+                break
+        if not merged:
+            final[company + "|" + title] = j
+
+    stats["duplicates_removed"] = duplicates
+    kept = list(final.values())
+    stats["kept"] = len(kept)
     print("Filter stats:", stats)
     return kept, stats
 
 
-def run(dry_run=False, report=False):
+def trim_to_caps(jobs):
+    """Applies the per-tier caps, then rebuilds the send order.
+
+    Kept in one place so --dry-run shows exactly what --once would send. Before this,
+    the dry run printed the raw list and the two disagreed.
+    """
+    trimmed = []
+    for tier_value in (1, 2, 3, 4):
+        bucket = [j for j in jobs if j["tier"] == tier_value]
+        trimmed.extend(bucket[:MAX_PER_TIER[tier_value]])
+    trimmed.sort(key=lambda x: (x["tier"], -x["score"]))
+    return trimmed
+
+
+def run(dry_run=False, report=False, dump_json=False):
     seen = load_seen()
     jobs, stats = collect()
+
+    if dump_json:
+        import_json = json.dumps(
+            [{k: v for k, v in j.items() if k not in ("description",)} for j in jobs],
+            ensure_ascii=False, indent=1,
+        )
+        Path("radar_jobs.json").write_text(import_json, encoding="utf-8")
+        print(f"Wrote {len(jobs)} jobs to radar_jobs.json")
 
     if report:
         print(f"\n{len(jobs)} jobs passed the filters\n")
         for j in sorted(jobs, key=lambda x: (x["tier"], -x["score"])):
             print(f"[tier {j['tier']}] {j['score']}%  {j['title']}  @ {j['company']}  ({j['location']})")
+
+    # --json and --report are inspection modes. They never send.
+    if report or dump_json:
         return
 
     new = [j for j in jobs if job_key(j) not in seen]
@@ -755,12 +1204,22 @@ def run(dry_run=False, report=False):
         seen.add(job_key(j))
 
     if dry_run:
-        print(f"\n{len(new)} new job(s) would be sent\n")
-        for j in new[:MAX_PER_RUN]:
+        to_send = trim_to_caps(new)
+        counts = {}
+        for j in to_send:
+            counts[j["tier"]] = counts.get(j["tier"], 0) + 1
+        print(f"\n{len(new)} new job(s) matched. {len(to_send)} would be sent:")
+        for tier_value in (1, 2, 3, 4):
+            if counts.get(tier_value):
+                print(f"   tier {tier_value}: {counts[tier_value]}")
+        print()
+        for j in to_send:
             print("=" * 60)
             print(format_job(j, j["tier"]))
             print()
         return
+
+    new = trim_to_caps(new)
 
     sent = 0
     for j in new[:MAX_PER_RUN]:
@@ -784,10 +1243,12 @@ def main():
     parser.add_argument("--once", action="store_true", help="scan once and send to Telegram")
     parser.add_argument("--dry-run", action="store_true", help="scan once, print only")
     parser.add_argument("--report", action="store_true", help="print everything that passed, grouped by tier")
+    parser.add_argument("--json", action="store_true",
+                        help="also write radar_jobs.json for job_sheet_sync.py")
     args = parser.parse_args()
 
-    if args.report:
-        run(report=True)
+    if args.report or args.json:
+        run(report=args.report, dump_json=args.json)
     elif args.dry_run or args.once:
         run(dry_run=args.dry_run)
     else:
