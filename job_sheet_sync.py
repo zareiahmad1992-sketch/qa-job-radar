@@ -180,26 +180,62 @@ def to_row(job) -> list:
 # Main
 # --------------------------------------------------------------------------- #
 
+def sync_file(path: str, dry_run: bool = False):
+    """Appends the jobs in a JSON file to the sheet. Returns (added, skipped).
+
+    Called from job_radar.py after the Telegram sends, so the sheet always holds
+    exactly what was sent rather than the results of a second scan.
+    """
+    spreadsheet_id = os.environ.get("SPREADSHEET_ID")
+    if not spreadsheet_id:
+        raise RuntimeError("SPREADSHEET_ID is not set")
+
+    with open(path, encoding="utf-8") as fh:
+        jobs = json.load(fh)
+
+    token = access_token()
+    current = sheets_get(token, spreadsheet_id, SHEET_RANGE)
+    known = existing_keys(current)
+
+    fresh = [j for j in jobs if row_key(j) not in known]
+    skipped = len(jobs) - len(fresh)
+    if not fresh:
+        return 0, skipped
+
+    rows = [to_row(j) for j in fresh]
+    if dry_run:
+        return len(rows), skipped
+
+    sheets_append(token, spreadsheet_id, rows)
+    return len(rows), skipped
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--input", default="radar_jobs.json",
-                    help="JSON dump of the radar run, see note below")
+    ap.add_argument("--input", default=None,
+                    help="JSON file of jobs. Defaults to sent_jobs.json if present, "
+                         "otherwise radar_jobs.json")
     args = ap.parse_args()
 
-    spreadsheet_id = os.environ.get("SPREADSHEET_ID")
-    if not spreadsheet_id:
+    if not os.environ.get("SPREADSHEET_ID"):
         sys.exit("SPREADSHEET_ID is not set")
 
+    source = args.input
+    if source is None:
+        source = "sent_jobs.json" if os.path.exists("sent_jobs.json") else "radar_jobs.json"
+
     try:
-        with open(args.input) as fh:
-            jobs = json.load(fh)
+        added, skipped = sync_file(source, dry_run=args.dry_run)
     except FileNotFoundError:
         sys.exit(
-            f"{args.input} not found. Produce it first:\n"
-            "  python job_radar.py --report --json > radar_jobs.json\n"
-            "(add a --json flag to job_radar.py, or reuse collect() directly)"
+            f"{source} not found. Run the radar first:\n"
+            "  python job_radar.py --once      (writes sent_jobs.json)\n"
+            "  python job_radar.py --json      (writes radar_jobs.json)"
         )
+
+    print(f"{source}: {added} rows {'would be ' if args.dry_run else ''}appended, "
+          f"{skipped} already in the sheet")
 
     token = access_token()
     current = sheets_get(token, spreadsheet_id, SHEET_RANGE)

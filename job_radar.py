@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -44,8 +45,8 @@ USER_AGENT = "Mozilla/5.0 (compatible; QAJobRadar/2.0)"
 # Per-run caps so a backlog never floods the chat. Armenia and remote-open roles are
 # always worth reading; the single-country remote ones are a long tail, so only the
 # strongest few go out each run.
-MAX_PER_TIER = {1: 6, 2: 6, 3: 3, 4: 2}
-MAX_PER_RUN = 12
+MAX_PER_TIER = {1: 8, 2: 8, 3: 5, 4: 3}
+MAX_PER_RUN = 18
 
 
 # --------------------------------------------------------------------------- #
@@ -92,6 +93,13 @@ LANGUAGE_BLOCKERS = [
     "fluent german", "german required", "deutschkenntnisse", "sehr gute deutsch",
     "fließend deutsch", "verhandlungssicher deutsch", "deutsch (c1", "deutsch c1",
     "german (c1", "german c2", "c1 german", "c2 german", "b2 german required",
+    # German requirements, including the phrasing German-language postings use.
+    # "Sehr gutes Deutsch" was slipping through, so the whole family is listed now.
+    "sehr gutes deutsch", "sehr gute deutsch", "gutes deutsch", "gute deutsch",
+    "deutsch und", "deutsch in wort", "wort und schrift", "fliessendes deutsch",
+    "fließendes deutsch", "deutsch fliessend", "deutsch fließend",
+    "deutschkenntnisse", "deutsch c1", "deutsch c2", "deutsch b2",
+    "german fluent", "fluent in german", "german speaker", "german-speaking",
     "nederlands", "dutch required", "fluent dutch", "estonian required",
     "fluent french", "french required", "fluent spanish required",
     "italiano madrelingua", "polski wymagany",
@@ -101,6 +109,19 @@ LANGUAGE_BLOCKERS = [
     "russian — native", "russian native", "russian - native",
     "polish — native", "polish native", "polish - native",
     "native ukrainian", "native russian", "native polish",
+    # CEFR codes. A posting asking for a language Ahmad does not speak at any
+    # level is a dead end, and C1/C2 in that language is worse than dead.
+    "ukrainian c1", "ukrainian c2", "ukrainian b2", "ukrainian b1",
+    "russian c1", "russian c2", "russian b2",
+    "polish c1", "polish c2", "polish b2",
+    "german c1", "german c2", "french c1", "french c2",
+    "dutch c1", "dutch c2", "spanish c1", "spanish c2",
+    "ukrainian — c1", "ukrainian — c2", "russian — c1", "russian — c2",
+    # English above his level. He is B2, so a posting demanding C1 or C2 will
+    # filter him out in screening. Better to know before he spends the effort.
+    "english c1", "english c2", "english — c1", "english — c2",
+    "english (c1", "english (c2", "c1 english", "c2 english",
+    "native english", "english native", "native-level english",
 ]
 
 # Companies that ask applicants for money, sell training, or are otherwise not
@@ -137,6 +158,9 @@ FOREIGN_TITLE_HINTS = [
     "m/w/d", "(m/w/x)", "w/m/d", "mit", "und", "für", "entwickler",
     "tester (m", "referent", "spezialist", "ingenieur", "ingénieur",
     "desenvolvedor", "ingegnere", "inżynier", "vývojář",
+    # German role words that mean the interview will be in German
+    "softwaretester", "testingenieur", "qualitätssicherung",
+    "testmanager", "testanalyst", "testerin",
 ]
 
 QA_SKILLS = [
@@ -514,6 +538,26 @@ def parse_staff_am():
     return out
 
 
+def fetch_linkedin(url: str, attempts: int = 3) -> str:
+    """Fetches one LinkedIn search page, waiting out a 429 rather than giving up."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fetch(url).decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code == 429:
+                wait = LINKEDIN_DELAY * (attempt * 3)
+                print(f"  LinkedIn 429, waiting {wait:.0f}s (attempt {attempt}/{attempts})")
+                time.sleep(wait)
+                continue
+            raise
+        except Exception as exc:
+            last_error = exc
+            time.sleep(LINKEDIN_DELAY)
+    raise last_error
+
+
 def parse_linkedin():
     """LinkedIn's public guest endpoint. No login, no API key, no cookies.
 
@@ -538,15 +582,41 @@ def parse_linkedin():
         ("QA Automation", "Yerevan, Armenia"),
         ("Test Engineer", "Yerevan, Armenia"),
     ]
+
+    # Remote roles across Europe. The first group are the countries that most
+    # often hire contractors and remote workers from outside; the second group
+    # are the larger Western markets, which are worth reading even though they
+    # usually want local residency.
     remote_europe_searches = [
+        # contractor-friendly
         ("QA Engineer", "Poland"),
         ("QA Engineer", "Portugal"),
         ("QA Engineer", "Romania"),
         ("QA Engineer", "Bulgaria"),
         ("QA Engineer", "Estonia"),
         ("QA Engineer", "Lithuania"),
+        ("QA Engineer", "Latvia"),
+        ("QA Engineer", "Czechia"),
+        ("QA Engineer", "Slovakia"),
+        ("QA Engineer", "Hungary"),
+        ("QA Engineer", "Croatia"),
+        ("QA Engineer", "Serbia"),
+        ("QA Engineer", "Greece"),
+        # larger Western markets
         ("QA Engineer", "Spain"),
         ("QA Engineer", "Netherlands"),
+        ("QA Engineer", "Germany"),
+        ("QA Engineer", "Ireland"),
+        ("QA Engineer", "United Kingdom"),
+        ("QA Engineer", "Austria"),
+        ("QA Engineer", "Sweden"),
+        ("QA Engineer", "Denmark"),
+        ("QA Engineer", "Finland"),
+        ("QA Engineer", "Norway"),
+        ("QA Engineer", "Switzerland"),
+        ("QA Engineer", "Italy"),
+        ("QA Engineer", "France"),
+        ("QA Engineer", "Belgium"),
     ]
 
     out = []
@@ -562,9 +632,12 @@ def parse_linkedin():
         if remote_only:
             url += "&f_WT=2"
         try:
-            raw = fetch(url).decode("utf-8", "replace")
-        except Exception:
+            raw = fetch_linkedin(url)
+        except Exception as exc:
+            print(f"  LinkedIn search skipped ({location}): {type(exc).__name__}")
+            time.sleep(LINKEDIN_DELAY)
             continue
+        time.sleep(LINKEDIN_DELAY)
         cards = raw.split('data-entity-urn="urn:li:jobPosting:')
         if len(cards) < 2:
             continue
@@ -936,19 +1009,63 @@ def matched_skills(job_):
 # State
 # --------------------------------------------------------------------------- #
 
+LINKEDIN_JOB_ID = re.compile(r"/jobs/view/(?:[^/]*-)?(\d{6,})")
+
+# LinkedIn's guest endpoint returns 429 once you make a dozen requests in a burst.
+# The delay and the backoff below are what keeps 27 country searches working
+# instead of half of them failing silently.
+LINKEDIN_DELAY = float(os.getenv("LINKEDIN_DELAY", "1.4"))
+
+
+def normalise_url(url: str) -> str:
+    """Cuts the parts of a URL that change without the job changing.
+
+    The same LinkedIn posting shows up as pt.linkedin.com, www.linkedin.com and
+    uk.linkedin.com, with different tracking parameters on each. Treating those as
+    three different jobs is why duplicates kept arriving.
+    """
+    if not url:
+        return ""
+    url = url.split("?")[0].split("#")[0].rstrip("/").lower()
+    match = LINKEDIN_JOB_ID.search(url)
+    if match:
+        return f"linkedin:{match.group(1)}"
+    # Staff.am and similar boards add a numeric suffix per posting; keep it.
+    return url
+
+
 def job_key(job_):
-    return job_["url"] or f"{job_['source']}|{job_['title']}|{job_['company']}"
+    """Identity for the seen list.
+
+    Company plus title, not URL. The same role gets posted on Djinni and on
+    LinkedIn and on the company's own board, and the URLs have nothing in common,
+    so a URL-based key lets the same job through three times under three names.
+    The URL is still used as a tiebreaker when company and title are both empty.
+    """
+    company = re.sub(r"[^a-z0-9]", "", (job_.get("company") or "").lower())
+    title = re.sub(r"[^a-z0-9]", "", (job_.get("title") or "").lower())
+    if company and title:
+        return f"{company}|{title}"
+    return normalise_url(job_.get("url", ""))
 
 
 def load_seen():
+    """Returns a dict of key -> first-seen ISO date."""
     try:
-        return set(json.loads(STATE_FILE.read_text()))
+        raw = json.loads(STATE_FILE.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
-        return set()
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    # Old format was a plain list of keys.
+    today = datetime.now(timezone.utc).date().isoformat()
+    return {k: today for k in raw}
 
 
 def save_seen(seen):
-    STATE_FILE.write_text(json.dumps(list(seen)[-3000:], ensure_ascii=False, indent=2))
+    """Keeps the newest 3000 entries by date, so old ones age out naturally."""
+    ordered = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)[:3000]
+    STATE_FILE.write_text(json.dumps(dict(ordered), ensure_ascii=False, indent=1))
 
 
 # --------------------------------------------------------------------------- #
@@ -1269,11 +1386,12 @@ def run(dry_run=False, report=False, dump_json=False):
     if report or dump_json:
         return
 
+    today = datetime.now(timezone.utc).date().isoformat()
     new = [j for j in jobs if job_key(j) not in seen]
     # Tier first, then score inside the tier.
     new.sort(key=lambda x: (x["tier"], -x["score"]))
     for j in new:
-        seen.add(job_key(j))
+        seen[job_key(j)] = today
 
     if dry_run:
         to_send = trim_to_caps(new)
@@ -1294,6 +1412,7 @@ def run(dry_run=False, report=False, dump_json=False):
     new = trim_to_caps(new)
 
     sent = 0
+    sent_jobs = []
     tailor_enabled = os.getenv("JOB_RADAR_TAILOR", "1") == "1"
     tailor_dir = Path("/tmp/tailored")
     tailor_error_shown = False
@@ -1302,6 +1421,7 @@ def run(dry_run=False, report=False, dump_json=False):
         try:
             telegram_send(format_job(j, j["tier"]))
             sent += 1
+            sent_jobs.append(j)
             time.sleep(1)
         except Exception as exc:
             print(f"Send failed for {j['title']}: {exc}")
@@ -1336,6 +1456,26 @@ def run(dry_run=False, report=False, dump_json=False):
             telegram_send(format_heartbeat(stats, len(new), sent, stats.get("sources", {})))
         except Exception as exc:
             print(f"Heartbeat failed: {exc}")
+
+    # Persist exactly what went to Telegram, so the sheet gets the same list
+    # rather than a fresh scan that might differ by a few postings.
+    Path("sent_jobs.json").write_text(
+        json.dumps([{k: v for k, v in j.items() if k != "description"} for j in sent_jobs],
+                   ensure_ascii=False, indent=1),
+        encoding="utf-8",
+    )
+
+    # Sheet sync, in the same run. If it fails, the alerts still went out.
+    if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_REFRESH_TOKEN"):
+        try:
+            sys.path.insert(0, str(Path(__file__).parent))
+            from job_sheet_sync import sync_file
+            added, skipped = sync_file("sent_jobs.json")
+            print(f"Sheet: {added} added, {skipped} already there")
+        except Exception as exc:
+            print(f"Sheet sync skipped: {type(exc).__name__}: {exc}")
+    else:
+        print("Sheet sync skipped: no Google credentials in this run")
 
     save_seen(seen)
     print(f"Sent {sent} of {len(new)} new job(s).")

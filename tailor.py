@@ -197,24 +197,6 @@ BODY_BLOCKS = {
                      "that owns the defect. A report saying which service broke is worth "
                      "more than one saying the screen looked wrong.",
 
-    "mobile": "Mobile is a real part of my history, not a line on a CV. At Taak Group I "
-              "built the Appium and Python setup that covered the Android and iOS flows "
-              "we repeated every sprint, and I still test Android builds by hand with "
-              "Android Studio, ADB and logcat when a crash needs a log rather than a "
-              "description.",
-
-    "perf": "I also run JMeter checks for response times and load before busy releases. "
-            "Not deep performance engineering, but enough to catch the endpoint that "
-            "falls over once real traffic arrives.",
-
-    "mobile_perf": "Mobile is a real part of my history, not a line on a CV. At Taak Group "
-                   "I built the Appium and Python setup that covered the Android and iOS "
-                   "flows we repeated every sprint, and I still test Android builds by hand "
-                   "with Android Studio, ADB and logcat when a crash needs a log rather "
-                   "than a description. I also run JMeter checks for response times before "
-                   "busy releases, which is enough to catch the endpoint that falls over "
-                   "once real traffic arrives.",
-
     "team": "I work in Scrum, review requirements with developers while they can still "
             "be changed, and write the documentation the rest of the team then works "
             "from. I am ISTQB CTFL certified and I work in English with distributed "
@@ -243,13 +225,6 @@ CLOSERS = {
     "caveat_cloud": "One honest gap: I am still early on Azure DevOps, having worked in "
                     "GitLab CI. The pipeline concepts are the same and I would be "
                     "productive within a month, but I did not want to imply otherwise.",
-
-    "caveat_gcp": "The gap I want to name before you find it: cloud platform work. My "
-                  "test automation runs against web, mobile and API layers, but the "
-                  "environments have been managed by our DevOps colleagues rather than "
-                  "built by me, and I have not worked hands-on in Google Cloud. I know "
-                  "what I would need to learn and I would rather say that plainly than "
-                  "have it surface in a technical interview.",
 }
 
 
@@ -278,38 +253,20 @@ def pick_body(job):
         blocks.append(BODY_BLOCKS["gaming"])
     if has(job, "ai ", "llm", "ai-assisted", "ai tools", "cursor", "claude", "copilot"):
         blocks.append(BODY_BLOCKS["ai"])
-    wants_mobile = has(job, "appium", "mobile app", "ios", "android")
-    wants_perf = has(job, "jmeter", "performance", "load test")
-    if wants_mobile and wants_perf:
-        blocks.append(BODY_BLOCKS["mobile_perf"])
-    elif wants_mobile:
-        blocks.append(BODY_BLOCKS["mobile"])
-    elif wants_perf:
-        blocks.append(BODY_BLOCKS["perf"])
     blocks.append(BODY_BLOCKS["investigation"])
     blocks.append(BODY_BLOCKS["team"])
-    return blocks[:5]  # five keeps the letter to one page with two gap paragraphs
+    return blocks[:5]  # five paragraphs is the most that stays readable
 
 
 def pick_gaps(job):
-    """Returns at most two honest gap paragraphs.
-
-    Two is the limit on purpose. Three admissions in one letter reads as an apology
-    rather than an application.
-    """
     gaps = []
-    # Ordered by how central the requirement is, because only two make the letter.
-    if has(job, "google cloud", "gcp", "public cloud"):
-        gaps.append(CLOSERS["caveat_gcp"])
-    if "typescript" in job_text(job):
-        gaps.append(CLOSERS["caveat_typescript"])
     if "ranorex" in job_text(job):
         gaps.append(CLOSERS["caveat_ranorex"])
-    # "Azure DevOps or GitLab" is a requirement he meets through GitLab, so it is
-    # not a gap. Only flag it when ADO is the sole option named.
-    if "azure devops" in job_text(job) and "gitlab" not in job_text(job):
+    if "typescript" in job_text(job):
+        gaps.append(CLOSERS["caveat_typescript"])
+    if "azure devops" in job_text(job):
         gaps.append(CLOSERS["caveat_cloud"])
-    return gaps[:2]
+    return gaps[:1]
 
 
 def country_from_job(job) -> str:
@@ -406,22 +363,11 @@ def build_resume(job, out_path: Path):
         skills.append("API and data: Postman collections and environments, Swagger, "
                       "REST validation, SQL database checks")
     if has(job, "automat", "playwright", "selenium", "sdet", "ci"):
-        auto = ("Automation: Playwright and Selenium WebDriver in Python and JavaScript; "
-                "suites running in GitLab CI")
-        if not has(job, "android", "ios", "mobile", "appium"):
-            auto = auto.replace("JavaScript; ", "JavaScript and Appium for Android; ")
-        skills.append(auto)
-    if has(job, "android", "ios", "mobile", "appium"):
-        mobile_line = ("Mobile: Android and iOS across devices and OS versions, Android "
-                       "Studio, ADB and logcat")
-        if "appium" in job_text(job):
-            mobile_line += "; Appium with Python for repeatable flows"
-        skills.append(mobile_line)
-    # Selenium is already covered by the automation line, so only add a dedicated
-    # line when the posting names Selenium but nothing that triggers automation.
-    if "selenium" in job_text(job) and not has(job, "automat", "playwright", "sdet", "ci"):
-        skills.append("Web automation: Selenium WebDriver in Python and JavaScript, "
-                      "page-object structure and suite maintenance")
+        skills.append("Automation: Playwright and Selenium WebDriver in Python and "
+                      "JavaScript; Appium for Android; suites running in GitLab CI")
+    if has(job, "android", "ios", "mobile"):
+        skills.append("Mobile: Android and iOS across devices and OS versions, Android "
+                      "Studio, ADB and logcat")
     if has(job, "ai", "llm", "ai tools"):
         skills.append("AI-assisted work: AI tools for test design and log reading, with "
                       "every output checked against the product")
@@ -519,6 +465,7 @@ def build_cover_letter(job, out_path: Path):
         story.append(Paragraph(gap, body))
 
     story.append(Paragraph(CLOSERS["portfolio"].format(portfolio=PORTFOLIO), body))
+    story.append(Paragraph(CLOSERS["honest_ai"], body))
 
     story.append(Spacer(1, 2))
     story.append(Paragraph("Best regards,", body))

@@ -24,10 +24,8 @@ on:
 permissions:
   contents: write
 
-# One run at a time. The previous value allowed overlapping runs, which is how
-# two copies ended up racing to commit the same state file.
 concurrency:
-  group: job-radar-state
+  group: job-radar
   cancel-in-progress: false
 
 jobs:
@@ -45,13 +43,15 @@ jobs:
 
       # reportlab builds the resume and cover letter PDFs.
       # It is the only dependency; everything else is standard library.
-      - name: Install PDF dependency
-        run: pip install --quiet reportlab
+      - name: Install dependencies
+        run: pip install --quiet reportlab cryptography
 
-      - name: Scan sources, send alerts and tailored documents
+      - name: Scan sources, send alerts, tailored documents and sheet rows
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           JOB_RADAR_TAILOR: ${{ inputs.no_documents == 'true' && '0' || '1' }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
@@ -62,59 +62,12 @@ jobs:
 
       - name: Save seen-job state
         run: |
-          if [ -z "$(git status --porcelain -- seen_jobs.json)" ]; then
+          if [ -n "$(git status --porcelain -- seen_jobs.json)" ]; then
+            git config user.name "qa-job-radar[bot]"
+            git config user.email "qa-job-radar[bot]@users.noreply.github.com"
+            git add seen_jobs.json
+            git commit -m "Update seen QA jobs"
+            git push
+          else
             echo "No state changes to commit."
-            exit 0
           fi
-
-          git config user.name "qa-job-radar[bot]"
-          git config user.email "qa-job-radar[bot]@users.noreply.github.com"
-          git add seen_jobs.json
-          git commit -m "Update seen QA jobs"
-
-          # Two runs can overlap, and the second push then gets rejected with
-          # "fetch first". Pull with rebase and retry a few times rather than
-          # failing the whole run over a state file.
-          for attempt in 1 2 3 4 5; do
-            if git push; then
-              echo "Pushed on attempt $attempt"
-              exit 0
-            fi
-            echo "Push rejected on attempt $attempt, rebasing and retrying"
-            git pull --rebase --autostash origin main || true
-            sleep $((attempt * 3))
-          done
-
-          echo "Could not push the state file after five attempts."
-          echo "The alerts went out, so the only consequence is that the next run"
-          echo "may resend a few jobs you have already seen. Not worth failing over."
-          exit 0
-
-  sync-to-sheet:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install dependencies
-        run: pip install --quiet cryptography reportlab
-
-      - name: Dump the radar results to JSON
-        run: python job_radar.py --json
-
-      - name: Append new jobs to the Google Sheet
-        env:
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: |
-          if [ -z "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
-            echo "No service account configured, skipping the sheet sync."
-            exit 0
-          fi
-          python job_sheet_sync.py
