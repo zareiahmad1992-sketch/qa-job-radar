@@ -69,9 +69,9 @@ Settings → Secrets and variables → Actions
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | از @BotFather | همه چیز |
 | `TELEGRAM_CHAT_ID` | `121203619` | همه چیز |
-| `SPREADSHEET_ID` | `1BVep4tiLBATSuUhIU0CWDQVzKMZBoyqsUjSnyWAAM20` | آپدیت شیت |
+| `SPREADSHEET_ID` | از آدرس شیت، بخش بین `/d/` و `/edit` | آپدیت شیت |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | کل فایل JSON | آپدیت شیت |
-| `EMAIL_USER` | `zarei.ahmad1992@gmail.com` | آگهی و پاسخ از ایمیل |
+| `EMAIL_USER` | آدرس جیمیل خودت | آگهی و پاسخ از ایمیل |
 | `EMAIL_APP_PASSWORD` | ۱۶ کاراکتر | آگهی و پاسخ از ایمیل |
 
 دو تای اول از قبل هست. چهار تای بعدی مانده.
@@ -167,6 +167,9 @@ Filter stats: {'total': 1200, ..., 'kept': 14}
 | `telegram/xxx: skipped` | کانال خصوصی است یا اسمش غلط | فقط کانال عمومی خوانده می‌شود |
 | `LinkedIn 429, waiting` | عادی است، خودش صبر می‌کند | کاری نکن |
 | `No module named reportlab` | نصب نشده | در workflow نوشته شده، اگر دیدی یعنی مرحله ۱ ناقص است |
+| `! [rejected] main -> main (fetch first)` | دو اجرا همزمان کامیت کردند | فایل workflow قدیمی است. نسخه جدید سه بار retry می‌کند |
+| `Node.js 20 is deprecated` | هشدار، نه خطا | در نسخه جدید checkout@v5 و setup-python@v6 گذاشته شده |
+| `ubuntu-latest will migrate to Ubuntu 26` | اطلاع، نه خطا | در نسخه جدید روی `ubuntu-24.04` قفل شده تا غافلگیر نشویم |
 
 ---
 
