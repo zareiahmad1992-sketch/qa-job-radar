@@ -1,10 +1,142 @@
 # QA Job Radar
 
-Scans public job feeds and sends software QA roles to Telegram, ranked by how
-usable they are for someone living in Yerevan, Armenia.
+A job search that runs itself. It finds QA roles that Ahmad can actually take
+from Yerevan, sends them to Telegram with a fit score, builds a tailored resume
+and cover letter for each one, tracks every application in a Google Sheet, and
+warns him the hour an interview invitation arrives.
 
-No LinkedIn, no scraping behind a login, no API keys. Every source below is a
-public feed or a public page.
+**Start with SETUP.md**, which has the upload structure and every secret.
+
+## Sources, sixteen of them
+
+| Source | Covers | Read |
+|---|---|---|
+| LinkedIn | 45 European countries, 34 employers, EU and EMEA regions, sponsorship queries | rotating shard per run |
+| Telegram channels | Yerevan and EU job channels, English, Russian, Armenian | every run |
+| Gmail | job alerts, plus application replies | every run |
+| Staff.am | Armenia | every run |
+| Himalayas, Djinni, Remotive, Jobicy, Working Nomads, We Work Remotely, Remote OK, Landing.jobs, Arbeitnow | global remote | every run |
+| Berlin Startup Jobs | Germany, Berlin tech, RSS | every run |
+| dev.bg | Bulgaria | every run |
+| cvbankas.lt | Lithuania | every run |
+
+Every source was checked against the live page before it was added. Sites that
+were tested and rejected because they now block scrapers or need a key: EURES,
+Jobgether, Remocate, Jooble, Indeed, Glassdoor, Kariera.gr, InfoJobs, jobs.cz,
+No Fluff Jobs, Just Join IT, Pracuj.pl.
+
+The Bulgarian and Lithuanian boards list on-site roles, and most of those are
+correctly dropped for needing a permit. They earn their place on the postings that
+say remote or offer relocation, which is roughly six out of twenty on a good day.
+
+## What changed on 2026-07-24
+
+**Search**
+
+* All 45 European countries are searched on LinkedIn, ordered so a rate limit
+  costs the smallest markets first, not Armenia or the contractor-friendly ones.
+* 34 employers are searched by name. LinkedIn's guest endpoint ignores the
+  company field, so every result is checked afterwards and non-matching cards are
+  thrown away. Without that check a search for SoftSwiss returned Wawa Inc in
+  Pennsylvania.
+* Regional searches for `European Union` and `EMEA` catch postings that never
+  name a country.
+* Eight sponsorship queries, because the words "visa" and "relocation" never
+  appear in a location field and a country search walks straight past them.
+* Postings older than ten days are dropped (`JOB_MAX_AGE_DAYS`), and inside a
+  priority group the fresher posting comes first.
+* Job-alert email is a source too. Four copies of one LinkedIn alert become one
+  row, keyed on the LinkedIn job id.
+* Two filter bugs fixed: "Marketing Automation Engineer" no longer counts as QA,
+  and Djinni's own job number is stripped from titles.
+
+**Priority**
+
+    1    Armenia, on site or remote
+    2    Remote, genuinely open
+    2.5  Europe with sponsorship, remote or on site
+    3    Remote, one country named, no sponsorship
+    4    On site in Europe with nothing said about permits
+
+**The sheet**
+
+* Two new columns: `Last reply` and `Next action`.
+* Conditional formatting: a red status cell means fit 85 or above and still
+  unsent. Green means an interview is booked.
+* `Inbox` tab logs every acknowledgement and rejection as it arrives.
+* Response funnel on `Summary`: applications sent, replies, interviews, response
+  rate, and applications sent in the last seven days.
+* `Archived` is hidden, not deleted.
+
+**Telegram channels**
+
+`telegram_channels.py` reads the public web preview of a channel, `t.me/s/<name>`,
+which needs no credentials and cannot put Ahmad's own Telegram account at risk.
+Posts are matched against QA wording in English, Russian and Armenian, because the
+Yerevan channels post in all three, and non-jobs (courses, webinars, resumes) are
+dropped.
+
+The honest limit: this only works for channels that are public and have the
+preview switched on. A private or invite-only channel cannot be read this way.
+For those the only route is adding a bot as a channel administrator, which needs
+the channel owner to act.
+
+Configure with the repository variable `TELEGRAM_CHANNELS`, a comma separated list
+of channel names without the @, or with a channels.json next to the scripts:
+
+    TELEGRAM_CHANNELS = qa_testirovshchik_jobs_vakansii,iJobAm_IT,iJobAm
+
+Setting it is enough. With no value the source returns nothing and the rest of the
+radar is unaffected.
+
+Tested against the eleven channels that were sent, on 2026-07-24:
+
+| Channel | Readable | QA posts in the last 20 |
+|---|---|---|
+| qa_testirovshchik_jobs_vakansii | yes | 18 |
+| iJobAm_IT | yes | 3 |
+| iJobAm | yes | 1 |
+| get_joboffer | yes | 0 |
+| RemoRoute | yes | 0 |
+| job_labdon | yes | 0 |
+| jobs_finding | yes | 0 |
+| remotejobss | yes | 0 |
+| germantechjobs | yes | 0 |
+| Jobs_global_startups | yes | 0 |
+| TechCareer_Hub | no, group | - |
+| jaabz_com_gp | no, group | - |
+
+Two channels are Telegram groups rather than channels. A group has no public web
+preview, so no amount of code will read it without a user session.
+
+**Replies**
+
+`email_replies.py` watches the mailbox hourly, classifies each reply as
+Interview, Assessment, Rejected or Applied, sends a Telegram message for the
+first three, and updates both the sheet row and the Inbox tab. Interview mail is
+the reason it exists: a rejection can wait, an invitation cannot.
+
+**Secrets now needed**
+
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID      already set
+    SPREADSHEET_ID                            still missing
+    GOOGLE_SERVICE_ACCOUNT_JSON               still missing
+    EMAIL_USER                                new, still missing
+    EMAIL_APP_PASSWORD                        new, still missing
+
+`EMAIL_APP_PASSWORD` is a Google App Password, which needs 2-Step Verification on
+the account first: Google Account, Security, App passwords. It is not the Gmail
+login password, and a normal password will not work over IMAP.
+
+Without the Google secrets the radar still runs and sends Telegram alerts, and
+the heartbeat says plainly that the sheet was not updated. Without the email
+secrets the reply watch prints that it needs them and the alert source returns
+nothing.
+
+**Tests**
+
+    python test_radar.py     offline, no network, no secrets
+
 
 ## Priority order
 

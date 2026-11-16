@@ -210,6 +210,140 @@ def sync_file(path: str, dry_run: bool = False):
     return len(rows), skipped
 
 
+def unsent_high_fit(min_fit: int = 85, limit: int = 3):
+    """Rows he already approved but has not sent, best fit first.
+
+    The sheet is the only place that knows this, so it is read back rather than
+    guessed at. Used by the heartbeat: a reminder about a finished application
+    is worth more than another listing.
+    """
+    spreadsheet_id = os.environ.get("SPREADSHEET_ID")
+    if not spreadsheet_id:
+        return []
+    token = access_token()
+    rows = sheets_get(token, spreadsheet_id, SHEET_RANGE)
+    pending = []
+    for row in rows[1:]:
+        if len(row) < 6:
+            continue
+        status = (row[8] if len(row) > 8 else "").strip()
+        if status not in ("Not applied", "Application started"):
+            continue
+        try:
+            fit = int(float(row[5]))
+        except (TypeError, ValueError):
+            continue
+        if fit < min_fit:
+            continue
+        pending.append({"company": row[2], "title": row[3], "fit": fit, "status": status})
+    pending.sort(key=lambda r: -r["fit"])
+    return pending[:limit]
+
+
+INBOX_RANGE = "Inbox!A:F"
+STATUS_COLUMN = 9        # I, Status
+REPLY_DATE_COLUMN = 13   # M, Last reply
+NEXT_ACTION_COLUMN = 14  # N, Next action
+
+NEXT_ACTION = {
+    "Interview": "Reply and book a slot",
+    "Assessment": "Do the test task, note the deadline",
+    "Rejected": "Closed. Move on",
+    "Applied": "Wait. Follow up in 7 days",
+}
+
+
+def _sheets_update(token, spreadsheet_id, cell_range, values):
+    """One small write to one range. Separate from sheets_append because that one
+    only ever adds rows at the bottom."""
+    body = json.dumps({"values": values}).encode()
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+           f"/values/{urllib.parse.quote(cell_range)}?valueInputOption=USER_ENTERED")
+    req = urllib.request.Request(url, data=body, method="PUT", headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=45) as response:
+        return json.loads(response.read())
+
+
+def _row_numbers(spreadsheet_id, token):
+    """Returns (sheet id of Jobs, sheet id of Inbox), creating Inbox if missing."""
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+           f"?fields=sheets.properties(sheetId,title)")
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=45) as response:
+        data = json.loads(response.read())
+    ids = {sheet["properties"]["title"]: sheet["properties"]["sheetId"]
+           for sheet in data.get("sheets", [])}
+    return ids
+
+
+def update_status(company: str, kind: str, when: str = "") -> bool:
+    """Finds the row for a company and records what came back.
+
+    Only the newest matching row is touched, and a row that already reads
+    Interview is never downgraded to Applied, because a later automated
+    acknowledgement must not erase a real invitation.
+    """
+    spreadsheet_id = os.environ.get("SPREADSHEET_ID")
+    if not spreadsheet_id:
+        raise RuntimeError("SPREADSHEET_ID is not set")
+    token = access_token()
+    rows = sheets_get(token, spreadsheet_id, SHEET_RANGE)
+    target = normalise_for_match(company)
+    if not target:
+        return False
+
+    best = None
+    for index, row in enumerate(rows[1:], start=2):
+        if len(row) < 4:
+            continue
+        if normalise_for_match(row[2]) != target:
+            continue
+        best = index  # last match wins, which is the newest row
+    if best is None:
+        return False
+
+    current = rows[best - 1][STATUS_COLUMN - 1] if len(rows[best - 1]) >= STATUS_COLUMN else ""
+    new_status = kind if kind in NEXT_ACTION else "Applied"
+    if current == "Interview" and new_status != "Rejected":
+        new_status = "Interview"
+    stamp = when or str(date.today())
+
+    _sheets_update(token, spreadsheet_id, f"Jobs!I{best}:N{best}",
+                   [[new_status, "", "", stamp, NEXT_ACTION.get(new_status, "")]])
+    return True
+
+
+def normalise_for_match(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def append_inbox(items):
+    """Appends the reply history to its own tab, so the record survives later
+    status changes in Jobs."""
+    spreadsheet_id = os.environ.get("SPREADSHEET_ID")
+    if not spreadsheet_id:
+        raise RuntimeError("SPREADSHEET_ID is not set")
+    token = access_token()
+    rows = [[str(date.today()), item.get("kind", ""), item.get("company", ""),
+             item.get("subject", ""), item.get("sender", ""), item.get("date", "")]
+            for item in items if item.get("company")]
+    if not rows:
+        return 0
+    body = json.dumps({"values": rows}).encode()
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+           f"/values/{urllib.parse.quote(INBOX_RANGE)}:append"
+           f"?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS")
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=45) as response:
+        json.loads(response.read())
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")

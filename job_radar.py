@@ -45,7 +45,11 @@ USER_AGENT = "Mozilla/5.0 (compatible; QAJobRadar/2.0)"
 # Per-run caps so a backlog never floods the chat. Armenia and remote-open roles are
 # always worth reading; the single-country remote ones are a long tail, so only the
 # strongest few go out each run.
-MAX_PER_TIER = {1: 8, 2: 8, 3: 5, 4: 3}
+# Remote and sponsored roles come first. Tier 2 (remote, genuinely open) and
+# tier 3 (remote, one country named) get the most room; tier 4 is on-site in
+# Europe and drops to the smallest share, because every one of those still needs
+# a work permit that the posting rarely offers.
+MAX_PER_TIER = {1: 8, 2: 10, 3: 6, 4: 2}
 MAX_PER_RUN = 18
 
 
@@ -56,6 +60,17 @@ MAX_PER_RUN = 18
 # The title has to say one of these. Checking the title and not the whole
 # description is deliberate: a warehouse job whose text mentions "test" once
 # should not get through.
+# Titles that contain a QA word but are a different job entirely. "Marketing
+# Automation Engineer" passed the title filter and reached the chat because the
+# pattern only asked for "automation". These are the cases seen in the wild.
+NOT_A_QA_TITLE = [
+    "marketing automation", "salesforce", "hubspot", "email automation",
+    "marketo", "crm automation", "marketing cloud", "seo", "content",
+    "business development", "sales representative", "account executive",
+    "data entry", "support engineer", "network engineer", "devops engineer",
+    "solutions architect", "product marketing",
+]
+
 SOFTWARE_QA_TITLE_PATTERNS = [
     r"\bqa\b", r"\bq\.a\.\b", r"quality assurance", r"software tester",
     r"\btester\b", r"test engineer", r"\bsdet\b", r"test automation",
@@ -122,6 +137,30 @@ LANGUAGE_BLOCKERS = [
     "english c1", "english c2", "english — c1", "english — c2",
     "english (c1", "english (c2", "c1 english", "c2 english",
     "native english", "english native", "native-level english",
+    # Nordic and Baltic languages. These kept arriving by hand from job boards
+    # the radar does not crawl, so the phrasings are all listed here rather than
+    # only the bare language name. The bare name is deliberately not blocked:
+    # "we are a Norwegian company" is not a language requirement, while
+    # "Norwegian and English, both written and verbal" is.
+    "norwegian and english", "norwegian, both written", "in norwegian",
+    "fluent norwegian", "norwegian required", "norwegian (", "norwegian c1",
+    "norsk", "skandinavisk", "scandinavian language",
+    "swedish and english", "in swedish", "fluent swedish", "swedish required",
+    "svenska", "swedish (",
+    "danish and english", "in danish", "fluent danish", "danish required",
+    "dansk", "danish (",
+    "finnish and english", "in finnish", "fluent finnish", "finnish required",
+    "suomi", "finnish (",
+    # Ordered pairs only: "and danish" alone would block a posting that mentions
+    # danish pastries in the perks section, which is not a language requirement.
+    "english and norwegian", "english and swedish", "english and danish",
+    "english and finnish", "english and lithuanian", "english and latvian",
+    "norwegian-speaking", "swedish-speaking", "danish-speaking",
+    "finnish-speaking", "norwegian speaking", "swedish speaking",
+    "icelandic", "icelandic required",
+    "lithuanian required", "fluent lithuanian", "in lithuanian",
+    "latvian required", "fluent latvian", "in latvian",
+    "estonian required", "fluent estonian", "in estonian",
 ]
 
 # Companies that ask applicants for money, sell training, or are otherwise not
@@ -243,6 +282,113 @@ EUROPE_CITIES = [
     "geneva", "basel", "vienna", "graz", "tbilisi", "baku", "chisinau",
 ]
 
+# The countries the radar actually searches on LinkedIn, in priority order.
+# One entry per country, and it covers every country in EUROPE_COUNTRIES, so a
+# country can no longer be recognised in a posting but never searched for.
+# Order matters: contractor-friendly markets first, large Western markets next,
+# small markets last, because LinkedIn throttles long runs and a throttle should
+# cost the tail rather than the head.
+SEARCH_COUNTRIES = [
+    # Nearby and contractor-friendly. These hire from outside the country most
+    # often, and they are the ones worth reading first.
+    "Poland", "Portugal", "Romania", "Bulgaria", "Estonia", "Lithuania",
+    "Latvia", "Czechia", "Slovakia", "Hungary", "Croatia", "Serbia", "Greece",
+    "Georgia", "Moldova",
+    # Large Western markets. More openings, but most want local residency.
+    "Spain", "Netherlands", "Germany", "Ireland", "United Kingdom", "Austria",
+    "Sweden", "Denmark", "Finland", "Norway", "Switzerland", "Italy", "France",
+    "Belgium", "Luxembourg", "Cyprus", "Malta", "Slovenia", "Iceland",
+    # Small or unusual markets. Fewer postings, cheap to include.
+    "Albania", "Bosnia and Herzegovina", "Kosovo", "Montenegro",
+    "North Macedonia", "Liechtenstein", "Monaco", "Andorra", "San Marino",
+    "Turkey", "Azerbaijan",
+]
+
+
+# Employers worth searching by name as well as by country.
+#
+# Why both. LinkedIn's guest search does not filter by company: asking it for
+# "QA SoftSwiss" returns Light & Wonder in Las Vegas and Wawa Inc in
+# Pennsylvania, because it only matches keywords. So a company search is run and
+# then every card whose company field does not contain the name is thrown away.
+# Noisier than a real company filter, and still worth it, because these are
+# employers that hire English-speaking QA and are already known to take people
+# from outside their own country. The country searches stay exactly as they were.
+WATCH_COMPANIES = [
+    # Armenia
+    "SoftConstruct", "Digitain", "BetConstruct", "ImagineLive", "Buymie",
+    "Buildern", "TUMO", "Krisp", "PicsArt", "Sperasoft", "Synopsys",
+    "Siemens EDA", "Broadridge", "Fortra", "ServiceTitan", "Tabby",
+    # iGaming and gambling technology with English-speaking teams
+    "SoftSwiss", "Evoplay", "Playson", "EveryMatrix", "Playtech", "Pragmatic Play",
+    # European product and fintech companies that hire QA remotely
+    "Bolt", "Wolt", "SumUp", "HelloFresh", "Personio", "JetBrains",
+    "Grid Dynamics", "EPAM", "Luxoft", "Intellias", "Ciklum", "N-iX",
+]
+
+# LinkedIn locations that mean a region rather than one country. These catch
+# postings that never name a country in the location field, which a per-country
+# search walks straight past.
+REGION_SEARCHES = [
+    ("QA Engineer", "European Union"),
+    ("QA Automation", "European Union"),
+    ("SDET", "European Union"),
+    ("QA Engineer", "EMEA"),
+]
+
+def linkedin_slot() -> int:
+    """Which two-hour slot of the day this is, 0 to 11.
+
+    Used to pick one shard per run, so the country and employer searches rotate
+    instead of all firing at once.
+    """
+    return datetime.now(timezone.utc).hour // 2
+
+
+def linkedin_shards():
+    """The non-Armenian searches, grouped so one group fits in a single run.
+
+    Returns a list of (name, queries). The order is by value: employers first,
+    then contractor-friendly countries, then regions and sponsorship, then the
+    larger Western markets split into three.
+    """
+    contractors = [c for c in SEARCH_COUNTRIES if c in CONTRACTOR_COUNTRIES]
+    rest = [c for c in SEARCH_COUNTRIES if c not in CONTRACTOR_COUNTRIES]
+    third = (len(rest) + 2) // 3
+    half = (len(WATCH_COMPANIES) + 1) // 2
+    return [
+        ("employers A",
+         [(f"QA {name}", "", 0, False, name) for name in WATCH_COMPANIES[:half]]),
+        ("employers B",
+         [(f"QA {name}", "", 0, False, name) for name in WATCH_COMPANIES[half:]]),
+        ("contractor countries",
+         [("QA Engineer", c, 0, True, None) for c in contractors]),
+        ("regions and sponsorship",
+         [(k, l, 0, True, None) for k, l in REGION_SEARCHES]
+         + [(k, l, 0, True, None) for k, l in SPONSORSHIP_SEARCHES]),
+        ("western markets A",
+         [("QA Engineer", c, 0, True, None) for c in rest[:third]]),
+        ("western markets B",
+         [("QA Engineer", c, 0, True, None) for c in rest[third:2 * third]]),
+        ("western markets C",
+         [("QA Engineer", c, 0, True, None) for c in rest[2 * third:]]),
+    ]
+
+
+# A posting that offers sponsorship is worth as much as a remote one, but it never
+# surfaces in a plain country search, because the words "visa" and "relocation" do
+# not appear in a location field. These queries exist only to find those.
+SPONSORSHIP_SEARCHES = [
+    ("QA Engineer visa sponsorship", "Germany"),
+    ("QA Engineer visa sponsorship", "Netherlands"),
+    ("QA Engineer visa sponsorship", "Poland"),
+    ("QA Engineer visa sponsorship", "Romania"),
+    ("QA Engineer visa sponsorship", "Czechia"),
+    ("QA Test Engineer relocation package", "Portugal"),
+    ("SDET visa sponsorship", "Spain"),
+    ("QA Engineer work permit", "Ireland"),
+]
+
 # Short country codes used by APIs such as Landing.jobs and Djinni.
 COUNTRY_CODES = {
     "at", "be", "bg", "ch", "cy", "cz", "de", "dk", "ee", "es", "fi", "fr",
@@ -252,12 +398,20 @@ COUNTRY_CODES = {
 
 SPONSORSHIP_MARKERS = [
     "visa sponsorship", "sponsorship available", "we sponsor", "sponsor visa",
-    "visa sponsored", "will sponsor", "sponsorship provided",
+    "visa sponsored", "will sponsor", "sponsorship provided", "sponsorship offered",
     "work permit", "work visa", "relocation package", "relocation support",
     "relocation bonus", "paid relocation", "relocation assistance", "we relocate",
     "relocation offered", "relocation provided", "visa support", "visa assistance",
     "blue card", "eu blue card", "skilled worker visa", "tier 2",
     "certificate of sponsorship", "right to work support",
+    # Phrasings that appeared in postings the first list walked past. All of these
+    # mean the employer will handle the paperwork or the move.
+    "relocation to", "we help with relocation", "we support your relocation",
+    "we cover relocation", "we pay for relocation", "relocation is supported",
+    "help you relocate", "assistance with relocation", "relocation help",
+    "immigration support", "work authorization support", "we assist with visa",
+    "visa and relocation", "relocation and visa", "we help with your move",
+    "support your move", "help with documents", "residence permit",
 ]
 
 
@@ -303,7 +457,7 @@ def job(source, title, company, location, url, description="", published="",
         remote=None, restrictions=None, relocation=False):
     return {
         "source": source,
-        "title": clean_text(title),
+        "title": tidy_title(clean_text(title)),
         "company": clean_text(company) or "Not listed",
         "location": clean_text(location) or "Not specified",
         "url": html.unescape(str(url or "")).strip(),
@@ -558,6 +712,21 @@ def fetch_linkedin(url: str, attempts: int = 3) -> str:
     raise last_error
 
 
+# Countries that hire contractors and remote workers from outside most often.
+# They are searched before the larger Western markets, which usually want local
+# residency.
+CONTRACTOR_COUNTRIES = {
+    "Poland", "Portugal", "Romania", "Bulgaria", "Estonia", "Lithuania", "Latvia",
+    "Czechia", "Slovakia", "Hungary", "Croatia", "Serbia", "Greece", "Georgia",
+    "Moldova", "Cyprus", "Malta",
+}
+
+
+def _normalise_name(text: str) -> str:
+    """'SoftSwiss' and 'SOFTSWISS' and 'Soft Swiss' all compare equal."""
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
 def parse_linkedin():
     """LinkedIn's public guest endpoint. No login, no API key, no cookies.
 
@@ -583,58 +752,69 @@ def parse_linkedin():
         ("Test Engineer", "Yerevan, Armenia"),
     ]
 
-    # Remote roles across Europe. The first group are the countries that most
-    # often hire contractors and remote workers from outside; the second group
-    # are the larger Western markets, which are worth reading even though they
-    # usually want local residency.
-    remote_europe_searches = [
-        # contractor-friendly
-        ("QA Engineer", "Poland"),
-        ("QA Engineer", "Portugal"),
-        ("QA Engineer", "Romania"),
-        ("QA Engineer", "Bulgaria"),
-        ("QA Engineer", "Estonia"),
-        ("QA Engineer", "Lithuania"),
-        ("QA Engineer", "Latvia"),
-        ("QA Engineer", "Czechia"),
-        ("QA Engineer", "Slovakia"),
-        ("QA Engineer", "Hungary"),
-        ("QA Engineer", "Croatia"),
-        ("QA Engineer", "Serbia"),
-        ("QA Engineer", "Greece"),
-        # larger Western markets
-        ("QA Engineer", "Spain"),
-        ("QA Engineer", "Netherlands"),
-        ("QA Engineer", "Germany"),
-        ("QA Engineer", "Ireland"),
-        ("QA Engineer", "United Kingdom"),
-        ("QA Engineer", "Austria"),
-        ("QA Engineer", "Sweden"),
-        ("QA Engineer", "Denmark"),
-        ("QA Engineer", "Finland"),
-        ("QA Engineer", "Norway"),
-        ("QA Engineer", "Switzerland"),
-        ("QA Engineer", "Italy"),
-        ("QA Engineer", "France"),
-        ("QA Engineer", "Belgium"),
-    ]
+    # Every country the radar knows how to recognise is also a country it
+    # searches. The order is deliberate: contractor-friendly markets first, then
+    # the large Western ones, then the smaller markets at the end. LinkedIn
+    # throttles long runs, so if a burst of 429s cuts the plan short it cuts the
+    # tail, and the countries most likely to hire from Yerevan have already been
+    # fetched.
 
     out = []
     seen = set()
 
-    plan = [(k, l, st, False) for k, l in armenia_searches for st in (0, 10, 25)]
-    plan += [(k, l, 0, True) for k, l in remote_europe_searches]
+    # The plan is ordered by value, because LinkedIn starts answering 429 partway
+    # through a long run and a trimmed plan should lose the tail, not the head:
+    #
+    #   1 Armenia on site            9 queries, the only roles needing no paperwork
+    #   2 employers by name          one query each, verified afterwards
+    #   3 contractor-friendly countries
+    #   4 regional searches          European Union and EMEA
+    #   5 sponsorship queries
+    #   6 the remaining countries
+    # Armenia is searched on every run, because it needs no paperwork and a role
+    # there is worth more than any other. The remaining 91 queries are split into
+    # shards and one shard is taken per run, chosen by the two-hour slot.
+    #
+    # Why not everything every time. At twelve runs a day, the full plan would be
+    # twelve hundred LinkedIn queries daily against an endpoint that starts
+    # answering 429 after about a dozen in a row. The run would spend most of its
+    # twenty minute budget waiting for throttles and often fail outright. Rotating
+    # keeps each run to roughly forty queries, and every shard still comes round
+    # twice a day.
+    #
+    # The cheap sources are unaffected: Telegram, the inbox, and the ten other
+    # feeds are read in full on every run, so a genuinely new posting is caught
+    # within two hours regardless of which LinkedIn shard is up.
+    armenia_plan = [(k, l, st, False, None)
+                    for k, l in armenia_searches for st in (0, 10, 25)]
 
-    for keywords, location, start, remote_only in plan:
+    shards = linkedin_shards()
+    if os.getenv("LINKEDIN_ROTATE", "1") == "1":
+        slot = linkedin_slot()
+        shard_name, shard = shards[slot % len(shards)]
+        print(f"  LinkedIn rotation: slot {slot:02d}, this run covers {shard_name} "
+              f"({len(shard)} queries)")
+        plan = armenia_plan + shard
+    else:
+        plan = armenia_plan + [item for _, shard in shards for item in shard]
+
+    budget = int(os.getenv("LINKEDIN_MAX_QUERIES", "60"))
+    if len(plan) > budget:
+        print(f"  LinkedIn plan trimmed from {len(plan)} to {budget} searches")
+        plan = plan[:budget]
+
+    for keywords, location, start, remote_only, require_company in plan:
         url = ("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?"
-               f"keywords={urllib.parse.quote(keywords)}"
-               f"&location={urllib.parse.quote(location)}&start={start}")
+               f"keywords={urllib.parse.quote(keywords)}")
+        if location:
+            url += f"&location={urllib.parse.quote(location)}"
+        url += f"&start={start}"
         if remote_only:
             url += "&f_WT=2"
         try:
             raw = fetch_linkedin(url)
         except Exception as exc:
-            print(f"  LinkedIn search skipped ({location}): {type(exc).__name__}")
+            print(f"  LinkedIn search skipped ({location or keywords}): {type(exc).__name__}")
             time.sleep(LINKEDIN_DELAY)
             continue
         time.sleep(LINKEDIN_DELAY)
@@ -659,6 +839,14 @@ def parse_linkedin():
                     return html.unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
 
                 location_text = grab(loc_m)
+
+                # LinkedIn ignored the company name, so drop the cards that are not
+                # that employer. Without this a search for SoftSwiss adds a QA job
+                # at Wawa Inc in Pennsylvania.
+                if require_company:
+                    found_company = grab(comp_m)
+                    if _normalise_name(require_company) not in _normalise_name(found_company):
+                        continue
                 # The f_WT=2 filter guarantees the posting is remote even when the
                 # location field only names the city, which is what LinkedIn does
                 # for "remote, based in Poland" style ads.
@@ -669,6 +857,102 @@ def parse_linkedin():
                     remote=is_remote,
                     restrictions=[location_text] if location_text else [],
                 ))
+    return out
+
+
+# Feeds that publish schema.org-ish RSS. One entry per board, picked because the
+# country it covers has no other source in the list: Germany through Berlin
+# Startup Jobs, which is the tech board most Berlin startups actually use.
+RSS_SOURCES = [
+    ("Berlin Startup Jobs", "https://berlinstartupjobs.com/engineering/feed/"),
+]
+
+
+def parse_rss():
+    """Generic RSS reader, so adding a country feed is one line, not one parser."""
+    out = []
+    for name, feed_url in RSS_SOURCES:
+        try:
+            raw = fetch(feed_url).decode("utf-8", "replace")
+        except Exception as exc:
+            print(f"  {name}: skipped ({type(exc).__name__})")
+            continue
+        for item in re.findall(r"<item>(.*?)</item>", raw, re.S)[:60]:
+            title = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", item, re.S)
+            link = re.search(r"<link>(.*?)</link>", item, re.S)
+            body = re.search(r"<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>", item, re.S)
+            date = re.search(r"<pubDate>(.*?)</pubDate>", item, re.S)
+            if not link:
+                continue
+            out.append(job(
+                name,
+                html.unescape(title.group(1)).strip() if title else "",
+                "",
+                "",
+                html.unescape(link.group(1)).strip(),
+                html.unescape(body.group(1)) if body else "",
+                date.group(1).strip() if date else "",
+                remote="remote" in (title.group(1) if title else "").lower(),
+            ))
+    return out
+
+
+def parse_devbg():
+    """dev.bg, the board Bulgarian developers actually use.
+
+    Structure, checked against the live page: each posting is
+    <div class="job-list-item ..." data-job-id="N"> holding
+    <span class="company-name">, <h6 class="job-title"> and the apply link.
+    """
+    out = []
+    raw = fetch("https://dev.bg/company/jobs/?s=qa").decode("utf-8", "replace")
+    for block in raw.split('class="job-list-item')[1:]:
+        block = block[:2500]
+        link = re.search(r'href="(https://dev\.bg/company/jobads/[^"]+)"', block)
+        title = re.search(r'class="job-title[^"]*"[^>]*>(.*?)</h6>', block, re.S)
+        company = re.search(r'class="company-name[^"]*"[^>]*>(.*?)</span>', block, re.S)
+        if not link or not title:
+            continue
+        out.append(job(
+            "dev.bg",
+            re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", title.group(1))).strip(),
+            re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", company.group(1))).strip() if company else "",
+            "Bulgaria",
+            html.unescape(link.group(1)),
+            "",
+            "",
+            remote="remote" in block.lower(),
+        ))
+    return out
+
+
+def parse_cvbankas():
+    """cvbankas.lt, the largest Lithuanian board.
+
+    Each posting is <article ... id="job_ad_N"> with <h3 class="list_h3"> for the
+    title, the company in <span class="dib mt5 mr5"> and the city in
+    <span class="list_city">.
+    """
+    out = []
+    raw = fetch("https://www.cvbankas.lt/?keyw=qa").decode("utf-8", "replace")
+    for block in raw.split('id="job_ad_')[1:]:
+        block = block[:2500]
+        link = re.search(r'href="(https://www\.cvbankas\.lt/[^"]+)"', block)
+        title = re.search(r'class="list_h3"[^>]*>(.*?)</h3>', block, re.S)
+        company = re.search(r'class="dib mt5 mr5"[^>]*>(.*?)</span>', block, re.S)
+        city = re.search(r'class="list_city"[^>]*>(.*?)</span>', block, re.S)
+        if not link or not title:
+            continue
+        out.append(job(
+            "cvbankas.lt",
+            re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", title.group(1))).strip(),
+            re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", company.group(1))).strip() if company else "",
+            "Lithuania" + (", " + city.group(1).strip() if city else ""),
+            html.unescape(link.group(1)),
+            "",
+            "",
+            remote=False,
+        ))
     return out
 
 
@@ -721,8 +1005,50 @@ def parse_djinni():
     return out
 
 
+def parse_email():
+    """Job alerts from the inbox, when the mailbox credentials exist.
+
+    Returns an empty list when they do not, so the radar keeps working for
+    anyone who has not set up an App Password yet.
+    """
+    if not (os.getenv("EMAIL_USER") and os.getenv("EMAIL_APP_PASSWORD")):
+        return []
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from email_alerts import collect
+        jobs, applications, _ = collect(days=int(os.getenv("EMAIL_LOOKBACK_DAYS", "7")))
+        if applications:
+            path = Path("email_applications.json")
+            path.write_text(json.dumps(applications, ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+        print(f"  email: {len(jobs)} unique posting(s), {len(applications)} application reply(s)")
+        return jobs
+    except Exception as exc:
+        print(f"  email: skipped ({type(exc).__name__}: {exc})")
+        return []
+
+
+def parse_telegram():
+    """QA postings from the public job channels on Telegram.
+
+    No credentials, because it reads the same public web preview a browser would.
+    A private channel cannot be read this way; see telegram_channels.py.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from telegram_channels import configured_channels, parse_telegram_channels
+        if not configured_channels():
+            return []
+        return parse_telegram_channels()
+    except Exception as exc:
+        print(f"  telegram: skipped ({type(exc).__name__}: {exc})")
+        return []
+
+
 SOURCES = [
     ("LinkedIn", parse_linkedin),
+    ("Email alerts", parse_email),
+    ("Telegram channels", parse_telegram),
     ("Himalayas", parse_himalayas),
     ("Djinni", parse_djinni),
     ("Remotive", parse_remotive),
@@ -733,6 +1059,9 @@ SOURCES = [
     ("Landing.jobs", parse_landingjobs),
     ("Arbeitnow", parse_arbeitnow),
     ("Staff.am", parse_staff_am),
+    ("Berlin Startup Jobs", parse_rss),
+    ("dev.bg", parse_devbg),
+    ("cvbankas.lt", parse_cvbankas),
 ]
 
 
@@ -744,8 +1073,20 @@ def haystack(job_):
     return f"{job_['title']} {job_['description']} {job_['location']}".lower()
 
 
+def tidy_title(title: str) -> str:
+    """Removes a source's own job number from the front of a title.
+
+    Djinni publishes "1214 | Senior Agentic QA Engineer", and that number reached
+    the Telegram message and the sheet. It means nothing to a human.
+    """
+    cleaned = re.sub(r"^\s*\d{2,6}\s*[|\-:]\s*", "", title or "")
+    return re.sub(r"\s+", " ", cleaned).strip() or (title or "").strip()
+
+
 def title_says_software_qa(job_) -> bool:
     title = job_["title"].lower()
+    if any(bad in title for bad in NOT_A_QA_TITLE):
+        return False
     return any(re.search(p, title) for p in SOFTWARE_QA_TITLE_PATTERNS)
 
 
@@ -756,9 +1097,33 @@ def is_scam(job_) -> bool:
     return any(phrase in text for phrase in SCAM_PHRASES)
 
 
+# Short industry terms that must match as whole words. Without the word
+# boundaries, "ems " matched inside "systems ", so every employer with Systems in
+# its name was silently thrown away: "EPAM Systems LLC" and "agentic RAG systems"
+# both read as electronics manufacturing. "capa" matched inside "capabilities",
+# "spc " inside "spec ", and "8d " inside a hash.
+SHORT_TERMS = {
+    "ems", "odm", "npi", "spc", "msa", "8d", "gmp", "fda", "smt", "emc", "iec",
+    "capa", "capa.", "cpk", "grr", "gr&r", "anü", "pcb", "haccp", "sop", "oos",
+    "iq", "oq", "pq", "capa,", "qms",
+}
+
+_WORD_TERM = re.compile(
+    r"\b(" + "|".join(sorted({re.escape(t.strip()) for t in SHORT_TERMS},
+                              key=len, reverse=True)) + r")\b"
+)
+
+
 def is_hard_excluded(job_) -> bool:
     text = haystack(job_)
-    return any(term in text for term in HARD_EXCLUDE)
+    # Long, unambiguous phrases are still plain substrings.
+    for term in HARD_EXCLUDE:
+        if term.strip().lower() in SHORT_TERMS:
+            continue
+        if term in text:
+            return True
+    # Short ones have to stand alone as words.
+    return bool(_WORD_TERM.search(text))
 
 
 def needs_missing_language(job_) -> bool:
@@ -794,10 +1159,15 @@ def djinni_detail_blocks(job_) -> bool:
         start = page.index(marker)
         lang_block = clean_text(page[start:start + 2500]).lower()
 
+    # Djinni renders "English  B2 - Upper Intermediate" as name/value rows, so a
+    # C1 or C2 in that block means a level he does not have.
     if "native" in lang_block:
         for language in DJINNI_BAD_NATIVE:
             if language in lang_block:
                 return True
+    for bad_level in ("c1 - advanced", "c2 - proficient"):
+        if bad_level in lang_block and "english" in lang_block:
+            return True
 
     # Candidate country rule
     text = clean_text(page).lower()
@@ -996,6 +1366,50 @@ def relevance_score(job_) -> int:
     return max(20, min(score, 97))
 
 
+def job_age_days(job_):
+    """Age of the posting in days, or None when the date cannot be read.
+
+    Sources disagree wildly: LinkedIn gives an ISO timestamp, several feeds give
+    "2 days ago", and some give nothing. When it is unreadable the job is treated
+    as fresh, because dropping a real role over an unparseable date is worse than
+    sending a slightly older one.
+    """
+    raw = (job_.get("created") or job_.get("published") or "").strip()
+    if not raw:
+        return None
+    text = raw.lower()
+    match = re.search(r"(\d+)\s*(minute|hour|day|week|month)s?\s+ago", text)
+    if match:
+        value, unit = int(match.group(1)), match.group(2)
+        factor = {"minute": 0, "hour": 0, "day": 1, "week": 7, "month": 30}[unit]
+        return value * factor
+    for pattern in (r"(\d{4}-\d{2}-\d{2})", r"(\d{2})[./](\d{2})[./](\d{4})"):
+        found = re.search(pattern, raw)
+        if not found:
+            continue
+        try:
+            if found.lastindex == 1:
+                stamp = datetime.strptime(found.group(1), "%Y-%m-%d")
+            else:
+                stamp = datetime.strptime(f"{found.group(3)}-{found.group(2)}-{found.group(1)}",
+                                          "%Y-%m-%d")
+            return max(0, (datetime.now(timezone.utc).replace(tzinfo=None) - stamp).days)
+        except ValueError:
+            continue
+    return None
+
+
+def is_stale(job_) -> bool:
+    """Old enough that the posting is probably closed.
+
+    Ten days is the default because a QA posting usually gathers its shortlist in
+    the first week or two. Override with JOB_MAX_AGE_DAYS.
+    """
+    limit = int(os.getenv("JOB_MAX_AGE_DAYS", "10"))
+    age = job_age_days(job_)
+    return age is not None and age > limit
+
+
 def has_description(job_) -> bool:
     return bool(job_["description"].strip())
 
@@ -1072,7 +1486,15 @@ def save_seen(seen):
 # Telegram
 # --------------------------------------------------------------------------- #
 
-def telegram_send(text):
+def telegram_send(text, parse_mode="HTML", preview=False):
+    """Sends one message.
+
+    parse_mode HTML is the default now, because bold titles, a fit bar and a
+    tappable link are the difference between a wall of text and something that
+    can be read on a phone in two seconds. Telegram silently drops messages with
+    broken markup, so every value that comes from a job posting is escaped before
+    it is inserted by format_job.
+    """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set")
@@ -1082,7 +1504,8 @@ def telegram_send(text):
     payload = urllib.parse.urlencode({
         "chat_id": CHAT_ID,
         "text": text,
-        "disable_web_page_preview": "false",
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": "false" if preview else "true",
     }).encode()
     req = urllib.request.Request(url, data=payload, method="POST")
     with urllib.request.urlopen(req, timeout=30) as response:
@@ -1135,19 +1558,19 @@ def telegram_send_document(pdf_path, caption=""):
 
 
 TIER_BADGE = {
-    1: "🇦🇲 Armenia — on-site or remote",
-    2: "🌍 Remote, open",
-    3: "🌍 Remote, one country named",
-    4: "🛂 On-site Europe, sponsorship offered",
+    1: "🇦🇲 Armenia · no paperwork",
+    2: "🌍 Remote · open",
+    3: "🌍 Remote · one country named",
+    4: "🛂 On-site Europe",
 }
 
 TIER_NOTE = {
     1: "",
     2: "",
-    3: "The posting names one country. Some of these will still take a contractor "
-       "elsewhere, many will not. Worth one question before you spend time applying.",
-    4: "On-site. They mention visa sponsorship or relocation, confirm the details "
-       "before applying because the process takes months.",
+    3: "The country is named. Worth one question about a contractor contract "
+       "before you spend an evening on it.",
+    4: "On-site, so a permit is needed. Confirm they will support one before "
+       "applying, because the process takes months.",
 }
 
 
@@ -1155,18 +1578,18 @@ def tier_note(job_, tier) -> str:
     return TIER_NOTE.get(tier, "")
 
 
-def format_heartbeat(stats, new_count, sent_count, sources):
+def format_heartbeat(stats, new_count, sent_count, sources, sheet_line=None):
     """A short status line, so a quiet day is visibly quiet rather than suspicious.
 
     Without this, "no message" could mean three different things: no new jobs, a
     broken source, or a dead job. This says which.
     """
-    lines = ["🔍 QA Job Radar ran", ""]
-    lines.append(f"Scanned {stats.get('total', 0)} postings from {len(sources)} sources")
+    lines = ["🔍 <b>QA Job Radar ran</b>", ""]
+    lines.append(f"Scanned <b>{stats.get('total', 0)}</b> postings from {len(sources)} sources")
     lines.append(f"Passed filters: {stats.get('kept', 0)}")
-    lines.append(f"New since last run: {new_count}")
+    lines.append(f"New since last run: <b>{new_count}</b>")
     if sent_count:
-        lines.append(f"Sent: {sent_count}")
+        lines.append(f"Sent: <b>{sent_count}</b>")
     else:
         lines.append("Sent: none, everything new has already been posted")
 
@@ -1175,30 +1598,85 @@ def format_heartbeat(stats, new_count, sent_count, sources):
     dead = [name for name, count in sources.items() if count == 0]
     if dead:
         lines.append("")
-        lines.append("Sources that returned nothing: " + ", ".join(dead))
+        lines.append("Sources that returned nothing: " + esc(", ".join(dead)))
+    if sheet_line:
+        lines.append("")
+        lines.append(sheet_line)
     return "\n".join(lines)
 
 
+def esc(text) -> str:
+    """HTML escape for Telegram. Anything from a job posting goes through this."""
+    return (str(text or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
+FIT_WORDS = [(90, "excellent match"), (80, "strong match"), (70, "good match"),
+             (55, "worth a look"), (0, "a stretch")]
+
+
+def fit_bar(score: int) -> str:
+    filled = max(0, min(10, round(score / 10)))
+    return "▰" * filled + "▱" * (10 - filled)
+
+
+def fit_word(score: int) -> str:
+    for floor, word in FIT_WORDS:
+        if score >= floor:
+            return word
+    return "a stretch"
+
+
 def format_job(job_, tier):
-    skills = ", ".join(matched_skills(job_)) or "general QA"
-    if has_description(job_):
-        fit_line = f"Fit: {relevance_score(job_)}%  ·  {skills}"
-    else:
-        fit_line = f"Fit: {relevance_score(job_)}% (title only)  ·  read the posting for detail"
-    lines = [
-        TIER_BADGE[tier],
-        "",
-        job_["title"],
-        f"Company: {job_['company']}",
-        f"Location: {job_['location']}",
-        f"Source: {job_['source']}",
-        fit_line,
-    ]
+    """One posting, laid out to be read on a phone.
+
+    Shape: what and where, then how well it fits as a bar, then only the flags
+    that change a decision, then the link. Everything from the posting is escaped
+    because Telegram rejects a message whose HTML does not parse, and a rejected
+    message is a lost job.
+    """
+    score = relevance_score(job_)
+    skills = matched_skills(job_)[:3]
+    lines = []
+
+    # Headline. The tier badge already says Armenia or remote, so the location
+    # line repeats it only when it adds something, usually the city.
+    lines.append(f"{TIER_BADGE[tier]}")
+    lines.append(f"<b>{esc(job_['title'])}</b>")
+
+    meta = [esc(job_["company"])]
+    location = (job_["location"] or "").strip()
+    if location and location.lower() not in ("remote", "not specified"):
+        meta.append(esc(location))
+    lines.append(" · ".join(part for part in meta if part))
+
+    lines.append("")
+    bar = fit_bar(score)
+    note = "" if has_description(job_) else " (title only)"
+    lines.append(f"{bar} <b>{score}%</b> · {fit_word(score)}{note}")
+    if skills:
+        lines.append("✅ " + " · ".join(esc(s) for s in skills))
+
+    # Only the flags that change a decision.
+    flags = []
+    if wants_sponsorship(job_):
+        flags.append("🛂 sponsorship or relocation mentioned")
+    age = job_age_days(job_)
+    if age is not None and age <= 3:
+        flags.append("🆕 posted " + ("today" if age == 0 else f"{age} day{'s' if age > 1 else ''} ago"))
+    if job_["relocation"]:
+        flags.append("🚚 relocation offered")
+    if flags:
+        lines.append("")
+        lines.extend(flags)
+
+    lines.append("")
+    lines.append(f'👉 <a href="{esc(job_["url"])}">Open the posting</a>')
+
     note = tier_note(job_, tier)
     if note:
-        lines.append("")
-        lines.append(note)
-    return "\n".join(lines) + f"\n\nApply: {job_['url']}"
+        lines.append(f"<i>{esc(note)}</i>")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -1273,7 +1751,7 @@ def collect():
     kept = []
     stats = {"total": 0, "not_qa": 0, "scam_blocked": 0, "hard_excluded": 0,
              "language": 0, "country_locked": 0, "djinni_detail_blocked": 0,
-             "out_of_scope": 0, "kept": 0}
+             "too_old": 0, "out_of_scope": 0, "kept": 0}
     for _, jobs in all_jobs:
         for j in jobs:
             stats["total"] += 1
@@ -1299,6 +1777,10 @@ def collect():
             # above for free, which keeps it to a handful of fetches per run.
             if j["source"] == "Djinni" and djinni_detail_blocks(j):
                 stats["djinni_detail_blocked"] += 1
+                continue
+
+            if is_stale(j):
+                stats["too_old"] += 1
                 continue
 
             tier = assign_tier(j)
@@ -1351,6 +1833,37 @@ def collect():
     return kept, stats
 
 
+def priority_rank(j):
+    """The order he asked for, as a single number. Lower sorts first.
+
+    1    Armenia, on site or remote. Nothing to arrange.
+    2    Remote, genuinely open. Contractor work is realistic.
+    2.5  Europe with sponsorship offered, remote or on site. Same level as 2,
+         because a sponsored on-site role is as reachable as an unsponsored
+         remote one, and often more so.
+    3    Remote but one country named and no sponsorship. Needs a question
+         before any effort is spent.
+    4    On site in Europe with nothing said about permits. Last, always.
+    """
+    tier = j["tier"]
+    sponsored = wants_sponsorship(j)
+    if tier in (2, 3, 4) and sponsored:
+        return 2.5
+    return float(tier)
+
+
+def send_priority(j):
+    """Tier group first, then fresh before old, then fit score.
+
+    Freshness outranks the score on purpose. A role posted yesterday is still
+    gathering applications; a perfect match posted three weeks ago has usually
+    already chosen someone.
+    """
+    age = job_age_days(j)
+    fresh = 0 if (age is None or age <= 2) else 1
+    return (priority_rank(j), fresh, -j["score"])
+
+
 def trim_to_caps(jobs):
     """Applies the per-tier caps, then rebuilds the send order.
 
@@ -1359,9 +1872,9 @@ def trim_to_caps(jobs):
     """
     trimmed = []
     for tier_value in (1, 2, 3, 4):
-        bucket = [j for j in jobs if j["tier"] == tier_value]
+        bucket = sorted([j for j in jobs if j["tier"] == tier_value], key=send_priority)
         trimmed.extend(bucket[:MAX_PER_TIER[tier_value]])
-    trimmed.sort(key=lambda x: (x["tier"], -x["score"]))
+    trimmed.sort(key=send_priority)
     return trimmed
 
 
@@ -1379,7 +1892,7 @@ def run(dry_run=False, report=False, dump_json=False):
 
     if report:
         print(f"\n{len(jobs)} jobs passed the filters\n")
-        for j in sorted(jobs, key=lambda x: (x["tier"], -x["score"])):
+        for j in sorted(jobs, key=send_priority):
             print(f"[tier {j['tier']}] {j['score']}%  {j['title']}  @ {j['company']}  ({j['location']})")
 
     # --json and --report are inspection modes. They never send.
@@ -1389,7 +1902,7 @@ def run(dry_run=False, report=False, dump_json=False):
     today = datetime.now(timezone.utc).date().isoformat()
     new = [j for j in jobs if job_key(j) not in seen]
     # Tier first, then score inside the tier.
-    new.sort(key=lambda x: (x["tier"], -x["score"]))
+    new.sort(key=send_priority)
     for j in new:
         seen[job_key(j)] = today
 
@@ -1434,7 +1947,7 @@ def run(dry_run=False, report=False, dump_json=False):
             sys.path.insert(0, str(Path(__file__).parent))
             from tailor import tailor as build_documents
             resume_pdf, letter_pdf = build_documents(j, tailor_dir)
-            caption = f"{j['title']} at {j['company']}"
+            caption = f"📄 {j['title']} · {j['company']}"
             telegram_send_document(resume_pdf, caption)
             time.sleep(0.5)
             telegram_send_document(letter_pdf, caption)
@@ -1451,11 +1964,9 @@ def run(dry_run=False, report=False, dump_json=False):
             telegram_send(f"ℹ️ {len(new) - MAX_PER_RUN} more matched. They will come through on the next run.")
         except Exception:
             pass
-    if os.getenv("JOB_RADAR_HEARTBEAT", "1") == "1":
-        try:
-            telegram_send(format_heartbeat(stats, len(new), sent, stats.get("sources", {})))
-        except Exception as exc:
-            print(f"Heartbeat failed: {exc}")
+    # Decided before the heartbeat is built, so the message can say whether the
+    # sheet actually received these rows.
+    keep = os.getenv("JOB_RADAR_HEARTBEAT", "1") == "1"
 
     # Persist exactly what went to Telegram, so the sheet gets the same list
     # rather than a fresh scan that might differ by a few postings.
@@ -1466,16 +1977,41 @@ def run(dry_run=False, report=False, dump_json=False):
     )
 
     # Sheet sync, in the same run. If it fails, the alerts still went out.
+    sheet_line = ""
     if os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_REFRESH_TOKEN"):
         try:
             sys.path.insert(0, str(Path(__file__).parent))
             from job_sheet_sync import sync_file
             added, skipped = sync_file("sent_jobs.json")
             print(f"Sheet: {added} added, {skipped} already there")
+            sheet_line = f"📊 Sheet updated: {added} new row(s)"
+            # The real bottleneck is not finding roles, it is leaving approved
+            # ones unsent. Read them back from the sheet he already fills in.
+            try:
+                from job_sheet_sync import unsent_high_fit
+                pending = unsent_high_fit(min_fit=85, limit=3)
+                if pending:
+                    lines = ["📌 <b>Ready and still unsent:</b>"]
+                    for row in pending:
+                        lines.append(f"   {fit_bar(row['fit'])} <b>{row['fit']}%</b> "
+                                     f"{esc(row['company'])} · {esc(row['title'])}")
+                    sheet_line += "\n" + "\n".join(lines)
+            except Exception as exc:
+                print(f"Unsent check skipped: {type(exc).__name__}: {exc}")
         except Exception as exc:
-            print(f"Sheet sync skipped: {type(exc).__name__}: {exc}")
+            print(f"Sheet sync failed: {type(exc).__name__}: {exc}")
+            sheet_line = f"⚠️ Sheet NOT updated: {type(exc).__name__}"
     else:
         print("Sheet sync skipped: no Google credentials in this run")
+        sheet_line = ("⚠️ Sheet NOT updated: GOOGLE_SERVICE_ACCOUNT_JSON and "
+                      "SPREADSHEET_ID are not set in the repo secrets")
+
+    if keep:
+        try:
+            telegram_send(format_heartbeat(stats, len(new), sent,
+                                          stats.get("sources", {}), sheet_line))
+        except Exception as exc:
+            print(f"Heartbeat failed: {exc}")
 
     save_seen(seen)
     print(f"Sent {sent} of {len(new)} new job(s).")

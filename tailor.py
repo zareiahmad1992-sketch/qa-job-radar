@@ -121,11 +121,11 @@ def picked_bullets(job, base, limit=7):
     """Base bullets for the role, plus the ones this posting actually asks for."""
     bullets = list(base)
     extras = [
-        ("api", ("api", "rest", "postman", "swagger")),
         ("sql", ("sql", "database", "data integrity")),
         ("mobile", ("android", "ios", "mobile")),
         ("compat", ("cross-browser", "cross browser", "compatibility", "devices")),
-        ("perf", ("performance", "load test", "jmeter", "scalab")),
+        ("perf", ("load testing", "performance testing", "jmeter", "scalability",
+                  "load and performance", "stress test")),
         ("ai", ("ai ", "llm", "automation tool")),
         ("roles", ("permission", "rbac", "roles", "access control")),
     ]
@@ -142,6 +142,11 @@ def picked_bullets(job, base, limit=7):
 # --------------------------------------------------------------------------- #
 
 OPENERS = {
+    "armenia_remote": "I am applying for {title} at {company}, which is listed as fully "
+                      "remote in Armenia. I already live in Yerevan, so there is no "
+                      "relocation to arrange and no permit to wait for, and a remote "
+                      "contract is how I have worked with distributed teams for years.",
+
     "armenia": "I saw this role in {location} and I am applying. I live in Yerevan, so "
                "there is no relocation to arrange and I can start without waiting for "
                "a permit.",
@@ -152,6 +157,14 @@ OPENERS = {
                      "names {country}, so before anything else: I am based in Yerevan "
                      "and would work as a contractor. If that does not fit, I would "
                      "rather know now than waste your time.",
+    "onsite_ask": "I am applying for {title} at {company}, and I will be direct about "
+                  "the one thing that decides this. The role is based in {location} and I "
+                  "live in Yerevan, so I would need work authorization to take it. The "
+                  "posting does not mention sponsorship, so I am asking rather than "
+                  "assuming: if you can support a permit for this role, I would like to be "
+                  "considered, and if you cannot, I understand and would rather not waste "
+                  "your time or mine.",
+
     "onsite_sponsor": "I am applying for {title} at {company}. I am based in Yerevan "
                       "and would need visa support to work on site, which the posting "
                       "suggests is possible. I have said that up front because the "
@@ -197,6 +210,46 @@ BODY_BLOCKS = {
                      "that owns the defect. A report saying which service broke is worth "
                      "more than one saying the screen looked wrong.",
 
+    "frameworks": "I have built and maintained the automation layer rather than only used "
+                  "one. At Dotin that means the pytest fixtures, the page objects and the "
+                  "helper code the rest of the suite sits on, plus deciding what belongs in "
+                  "CI and what is not worth automating at all. At Taak I set up the Appium "
+                  "side from nothing. I review test code the way I review tests: does this "
+                  "assertion actually fail when the thing it covers breaks, and would the "
+                  "failure message tell the next person where to look.",
+
+    "frameworks_jenkins": "I have built and maintained the automation layer rather than only "
+                          "used one. At Dotin that means the pytest fixtures, the page objects "
+                          "and the helper code the rest of the suite sits on. The pipelines I "
+                          "run those in are GitLab CI and Docker rather than Jenkins, which is "
+                          "the same work with different YAML, and I have not claimed Jenkins "
+                          "on my CV. At Taak I set up the Appium side from nothing. I review "
+                          "test code the way I review tests: does this assertion fail when "
+                          "the thing it covers breaks.",
+
+    "ai_build": "The AI project is the half I would be growing into, so let me be exact "
+                "about which half. Using coding agents to draft and extend tests is already "
+                "part of my week, and most of that time goes on checking the output rather "
+                "than accepting it: a generated test that asserts something plausible but "
+                "wrong is worse than a missing one, because it will pass forever and tell "
+                "nobody anything. What I have not done is take that from a habit into "
+                "infrastructure other people use. That is the work I want, and I would "
+                "start it from the checking side, which is the right side to start from.",
+
+    "ai_product": "The AI angle is what caught my attention, and I want to be precise about "
+                  "where I sit with it. I do not have a background in model evaluation or LLM "
+                  "benchmarking. What I do have is the part that matters for shipping a product "
+                  "like this: using coding agents to draft and extend tests, then checking "
+                  "whether each generated test actually asserts the right behaviour rather than "
+                  "something plausible. On a product whose output varies, that checking is most "
+                  "of the job, and it is the habit I already have.",
+
+    "data_product": "A fair share of my testing is on data rather than screens: building the "
+                    "datasets a test needs, running end-to-end regression through the whole "
+                    "flow, and then checking the rows that came out the other end rather than "
+                    "only the response that arrived. On a data product, a run that completes "
+                    "cleanly and produces the wrong records is the defect worth catching.",
+
     "team": "I work in Scrum, review requirements with developers while they can still "
             "be changed, and write the documentation the rest of the team then works "
             "from. I am ISTQB CTFL certified and I work in English with distributed "
@@ -225,6 +278,81 @@ CLOSERS = {
     "caveat_cloud": "One honest gap: I am still early on Azure DevOps, having worked in "
                     "GitLab CI. The pipeline concepts are the same and I would be "
                     "productive within a month, but I did not want to imply otherwise.",
+
+    "caveat_latvian": "One practical thing, said early: the posting asks for spoken and written "
+                      "Latvian, and I do not speak it. My working language is English, which "
+                      "is where all my test documentation and defect reports are written, and "
+                      "I have worked in English with distributed teams for years. If the role "
+                      "genuinely needs Latvian for internal communication, I would rather you "
+                      "know now.",
+
+    "caveat_ukrainian": "One thing I should say first, because it decides the rest: the "
+                        "posting asks for Ukrainian at a professional level and I do not "
+                        "speak it. My working languages are English, which is where every "
+                        "test plan, defect report and review comment I write is written, and "
+                        "Persian as a native speaker. If Ukrainian is what the team "
+                        "communicates in day to day, this will not work and I would rather "
+                        "say so now than have it come up at interview.",
+
+    "caveat_mcp": "One honest gap on the AI side: MCP. I understand what it is for, a "
+                  "standard way for a model to call tools and services instead of each "
+                  "integration being hand wired, and I can follow a design conversation "
+                  "about it. I have not built an MCP server and have not wired one into a "
+                  "testing setup. That is the part I would be learning rather than bringing.",
+
+    "caveat_queues": "One gap in the backend list, so it does not come up as a surprise. "
+                     "Of the three the posting names, APIs and databases are where most of "
+                     "my testing sits: Postman and Swagger on the request side, SQL on the "
+                     "stored side, and trace IDs across services when a record ends up in a "
+                     "state nobody expected. Message queues are the piece I have tested "
+                     "around rather than operated directly. I have followed asynchronous "
+                     "flows through logs to find where a message was consumed and what "
+                     "happened to it, and I have not worked hands on with a broker such as "
+                     "Kafka or RabbitMQ, reading topics, consumer groups and lag. If the "
+                     "role needs that from day one, I would be learning it on the job.",
+
+    "caveat_golang": "On Go: the posting lists basic knowledge of Golang as desirable and I "
+                     "have not written it. I read it well enough to follow what a service is "
+                     "doing, and I have picked a language up from nothing before when a project "
+                     "needed one, which is how the Appium setup at Taak started. If the "
+                     "technical interview involves reading Go, I would rather walk through it "
+                     "honestly than have you find out that the syntax was not as familiar as "
+                     "the CV implied.",
+
+    "caveat_credit_risk": "One thing about the domain, so the fit is not oversold. I have tested "
+                          "banking systems and their business rules, and I have not worked with "
+                          "a credit decisioning engine or a scoring model. What I recognize in "
+                          "this posting is the layer around that: checking that a rule fires "
+                          "where it should and nowhere else, that the record left behind "
+                          "matches the decision the customer was told about, and that a policy "
+                          "change did not quietly alter a case nobody was looking at. Those are "
+                          "the tests I already write. If the role leans more toward designing "
+                          "risk strategy than toward verifying the implementation of it, I "
+                          "would be learning that part on the job.",
+
+    "caveat_java": "One thing worth saying about the stack: the posting asks for the ability "
+                   "to review and contribute to automated tests written in Java or Kotlin. My "
+                   "automation is Playwright and Selenium in Python and JavaScript, and I have "
+                   "not written Java. I read code well enough to review what a test asserts, "
+                   "and I have picked up a new language before fast enough to be useful in "
+                   "weeks. But I would rather name the gap now than have it arrive as a "
+                   "surprise in a technical interview.",
+
+    "caveat_seniority": "One thing about the level: the posting asks for ten or more years and "
+                        "I have five. What I have is depth rather than breadth — banking "
+                        "systems where a missed edge case becomes a wrong number in a "
+                        "customer's account, automation I own end to end rather than write and "
+                        "hand over, and a habit of writing things down so the next person does "
+                        "not have to ask me. If a principal role needs someone who has already "
+                        "done that for a decade, I understand. If you would weigh a strong five "
+                        "years against a harder problem than most, I would like the conversation.",
+
+    "caveat_gcp_studying": "On cloud: my test automation runs against web, mobile and API "
+                           "layers, but the environments have been managed by our DevOps "
+                           "colleagues rather than built by me. That is the piece I have "
+                           "started on rather than just noticed: I am working through the "
+                           "Google Cloud Digital Leader path now, and I would rather say where "
+                           "I actually am than have it surface in a technical interview.",
 }
 
 
@@ -232,49 +360,156 @@ def pick_opener(job) -> str:
     tier = job.get("tier")
     location = job.get("location", "Yerevan")
     if tier == 1:
+        if "remote" in (location or "").lower():
+            return OPENERS["armenia_remote"]
         return OPENERS["armenia"]
     if tier == 2:
         return OPENERS["remote_eu"]
     if tier == 4:
-        return OPENERS["onsite_sponsor"]
+        text = job_text(job)
+        if any(w in text for w in ("sponsorship", "visa support", "relocation package",
+                                   "work permit", "blue card", "we sponsor")):
+            return OPENERS["onsite_sponsor"]
+        return OPENERS["onsite_ask"]
     return OPENERS["remote_single"]
 
 
 def pick_body(job):
-    blocks = []
-    blocks.append(BODY_BLOCKS["manual"])
-    if has(job, "automat", "playwright", "selenium", "sdet", "ci/cd", "pipeline"):
-        blocks.append(BODY_BLOCKS["automation"])
-    if has(job, "api", "rest", "postman", "integration"):
-        blocks.append(BODY_BLOCKS["api"])
-    if has(job, "bank", "financ", "payment", "fintech", "transaction"):
-        blocks.append(BODY_BLOCKS["fintech"])
-    if has(job, "game", "gaming", "igaming", "casino", "player"):
-        blocks.append(BODY_BLOCKS["gaming"])
-    if has(job, "ai ", "llm", "ai-assisted", "ai tools", "cursor", "claude", "copilot"):
-        blocks.append(BODY_BLOCKS["ai"])
-    blocks.append(BODY_BLOCKS["investigation"])
-    blocks.append(BODY_BLOCKS["team"])
-    return blocks[:5]  # five paragraphs is the most that stays readable
+    """Chooses the letter's body paragraphs.
+
+    Order matters more than it looks. The first paragraph has to be the one that
+    answers what the posting actually asks for, and the letter has to stay on one
+    page, so the list is built by priority and then cut. When a specific AI block
+    is chosen it replaces the generic one, because saying the same thing twice in
+    different words is worse than saying it once.
+    """
+    text = job_text(job)
+    chosen = []
+
+    def take(key):
+        if key in BODY_BLOCKS and BODY_BLOCKS[key] not in chosen:
+            chosen.append(BODY_BLOCKS[key])
+
+    # Always first: what he does most of the time. For a role that is automation
+    # first, that paragraph leads instead and the manual one steps aside, because
+    # opening with "most of my week is manual" against a pure automation posting
+    # reads as a mismatch he does not actually have.
+    if job.get("lead") == "automation":
+        take("automation")
+        take("frameworks_jenkins" if ("jenkins" in text and "gitlab" not in text)
+             else "frameworks")
+    else:
+        take("manual")
+        if any(w in text for w in ("automat", "playwright", "selenium", "sdet", "ci/cd", "pipeline")):
+            take("automation")
+    if any(w in text for w in ("api", "rest", "postman", "integration", "contract test")):
+        take("api")
+
+    # Domain colour, only one of these, because two reads as padding
+    if any(w in text for w in ("mcp", "claude code", "codex", "ai-powered", "ai powered",
+                               "agentic")):
+        take("ai_build")
+    elif any(w in text for w in ("ai/ml", "large language model", "generative ai",
+                                 "coding agent", "llm", "ai-assisted")):
+        take("ai_product")
+    elif any(w in text for w in ("ai ", "cursor", "claude", "copilot", "ai tools")):
+        take("ai")
+    if any(w in text for w in ("data pipeline", "data product", "dataset", "etl", "data science")):
+        take("data_product")
+    if any(w in text for w in ("game", "gaming", "igaming", "casino", "player",
+                               "sportsbook", "betting")):
+        take("gaming")
+    if any(w in text for w in ("banking", "bank ", "banks", "fintech", "payment",
+                               "transaction", "trading", "financial services",
+                               "credit risk", "credit policy", "credit decision",
+                               "credit score", "lending", "bnpl", "loan", "loans",
+                               "installment", "installments", "anti-fraud",
+                               "underwriting", "scoring model", "money app")):
+        take("fintech")
+
+    # Platform-specific, only when the posting names the platform
+    if any(w in text for w in ("appium", "mobile app", "ios", "android")):
+        take("mobile")
+    if any(w in text for w in ("jmeter", "performance", "load test", "scalab")):
+        take("perf")
+
+    # Always last: how he works and investigates
+    take("investigation")
+    take("team")
+
+    return chosen[:5]  # five keeps the letter to one page with two gap paragraphs
 
 
 def pick_gaps(job):
+    """Returns at most two honest gap paragraphs, most central requirement first.
+
+    Two is the limit on purpose. Three admissions in one letter reads as an apology
+    rather than an application.
+    """
+    text = job_text(job)
     gaps = []
-    if "ranorex" in job_text(job):
+
+    # Hard skill requirements the posting names explicitly
+    if "ukrainian" in text:
+        gaps.append(CLOSERS["caveat_ukrainian"])
+    if "latvian" in text:
+        gaps.append(CLOSERS["caveat_latvian"])
+    if "mcp" in text or "model context protocol" in text:
+        gaps.append(CLOSERS["caveat_mcp"])
+    if any(w in text for w in ("message queue", "message queues", "kafka", "rabbitmq",
+                               "message broker", "event streaming")):
+        gaps.append(CLOSERS["caveat_queues"])
+    if any(w in text for w in ("golang", " go,", "go code", "golang,")):
+        gaps.append(CLOSERS["caveat_golang"])
+    elif any(w in text for w in ("java", "kotlin", "c#", " .net")):
+        gaps.append(CLOSERS["caveat_java"])
+    # A credit or risk decisioning role is a different domain from generic
+    # fintech testing, and saying so early is worth more than a smooth letter.
+    if any(w in text for w in ("credit decision", "credit policy", "credit risk",
+                               "risk assessment", "scoring model", "decision-making strategy",
+                               "decision making strategy", "underwriting")):
+        gaps.append(CLOSERS["caveat_credit_risk"])
+    if any(w in text for w in ("google cloud", "gcp", "public cloud")):
+        gaps.append(CLOSERS["caveat_gcp_studying"])
+    if "ranorex" in text:
         gaps.append(CLOSERS["caveat_ranorex"])
-    if "typescript" in job_text(job):
+    if "typescript" in text:
         gaps.append(CLOSERS["caveat_typescript"])
-    if "azure devops" in job_text(job):
+
+    # Azure DevOps only matters when GitLab is not offered as the alternative
+    if "azure devops" in text and "gitlab" not in text:
         gaps.append(CLOSERS["caveat_cloud"])
-    return gaps[:1]
+
+    # Seniority last, because it is the least useful admission when a hard skill
+    # gap is already on the table.
+    if any(w in text for w in ("10 or more years", "ten or more years", "10+ years",
+                               "principal test", "principal quality")):
+        gaps.append(CLOSERS["caveat_seniority"])
+
+    return gaps[:2]
+
+
+COUNTRY_NAMES = {
+    "poland": "Poland", "portugal": "Portugal", "spain": "Spain",
+    "germany": "Germany", "netherlands": "the Netherlands",
+    "romania": "Romania", "bulgaria": "Bulgaria", "estonia": "Estonia",
+    "lithuania": "Lithuania", "latvia": "Latvia", "czech": "the Czech Republic",
+    "czechia": "the Czech Republic", "slovakia": "Slovakia", "hungary": "Hungary",
+    "croatia": "Croatia", "serbia": "Serbia", "greece": "Greece",
+    "italy": "Italy", "france": "France", "belgium": "Belgium",
+    "austria": "Austria", "sweden": "Sweden", "denmark": "Denmark",
+    "finland": "Finland", "norway": "Norway", "switzerland": "Switzerland",
+    "ireland": "Ireland", "ukraine": "Ukraine",
+    "united kingdom": "the United Kingdom", "england": "the United Kingdom",
+    "israel": "Israel", "turkey": "Turkey",
+}
 
 
 def country_from_job(job) -> str:
     text = f"{job.get('location','')} {' '.join(job.get('restrictions', []))}".lower()
-    for name in ("poland", "portugal", "spain", "germany", "netherlands", "romania",
-                 "bulgaria", "estonia", "lithuania", "czech", "italy", "france"):
-        if name in text:
-            return name.title()
+    for key, name in COUNTRY_NAMES.items():
+        if key in text:
+            return name
     return "one country"
 
 
@@ -290,8 +525,14 @@ def resume_subtitle(job) -> str:
     title = job.get("title", "QA Engineer")
     words = [w for w in title.split() if w.lower() not in BANNED_TITLE_WORDS]
     cleaned = " ".join(words) or "QA Engineer"
-    # Trim anything in brackets, which is usually noise like "(m/f/d)"
-    cleaned = re.sub(r"\(.*?\)", "", cleaned).strip()
+    # Strip bracket noise like "(m/f/d)" or "(Remote)" but keep "(QA)", which is
+    # the part of the title that actually describes the job.
+    cleaned = re.sub(r"\(\s*(m/f/d|f/m/d|m/w/d|w/m/d|all genders|remote|hybrid|"
+                     r"on-?site|full[- ]time|part[- ]time|contract|contractor|"
+                     r"temporary|\d+\s*(?:months?|years?))\s*\)", "",
+                     cleaned, flags=re.I).strip()
+    if job.get("lead") == "automation":
+        return f"{cleaned}  |  Python, Playwright, API Testing"
     if "automat" in job_text(job):
         return f"{cleaned}  |  Manual & Automation"
     return f"{cleaned}  |  Manual, API & Mobile"
@@ -344,7 +585,10 @@ def build_resume(job, out_path: Path):
     if has(job, "automat", "playwright"):
         summary += ("I maintain the Playwright suite and keep it running in CI rather "
                     "than on someone's laptop. ")
-    if job.get("tier") == 1:
+    if job.get("tier") == 1 and "remote" in (job.get("location", "") or "").lower():
+        summary += ("This role is fully remote and based in Armenia, where I already live, "
+                    "so there is no relocation and no permit to wait for.")
+    elif job.get("tier") == 1:
         summary += "I am in Yerevan and available on site."
     else:
         summary += "I am based in Yerevan and work remotely with distributed teams."
@@ -364,15 +608,16 @@ def build_resume(job, out_path: Path):
                       "REST validation, SQL database checks")
     if has(job, "automat", "playwright", "selenium", "sdet", "ci"):
         skills.append("Automation: Playwright and Selenium WebDriver in Python and "
-                      "JavaScript; Appium for Android; suites running in GitLab CI")
+                      "JavaScript; Appium for Android; suites running in GitLab CI "
+                      "and Docker")
     if has(job, "android", "ios", "mobile"):
         skills.append("Mobile: Android and iOS across devices and OS versions, Android "
                       "Studio, ADB and logcat")
-    if has(job, "ai", "llm", "ai tools"):
-        skills.append("AI-assisted work: AI tools for test design and log reading, with "
-                      "every output checked against the product")
-    skills.append("Investigation: DevTools, network inspection, ELK logs, KQL, trace ID "
-                  "correlation; Jira, Xray, TestRail, ISTQB CTFL certified")
+    if has(job, "ai", "llm", "ai tools", "generative ai", "coding agent"):
+        skills.append("AI-assisted testing: coding agents used to draft and extend tests, "
+                      "with every generated assertion checked against real product behaviour")
+    skills.append("Investigation: DevTools, network inspection, Kibana and ELK logs, "
+                  "KQL, trace ID correlation; Jira, Xray, TestRail, ISTQB CTFL certified")
     for s in skills:
         story.append(Paragraph(s, bul, bulletText="•"))
 
@@ -409,6 +654,8 @@ def build_resume(job, out_path: Path):
                            bul, bulletText="•"))
     story.append(Paragraph("API Testing, 15 Days of Postman (For Testers)",
                            bul, bulletText="•"))
+    story.append(Paragraph("Google Cloud Digital Leader path, in progress "
+                           "(skills.google/paths/9)", bul, bulletText="•"))
 
     story.append(Paragraph("EDUCATION", head))
     story.append(HRFlowable(width="100%", thickness=0.7, color=NAVY, spaceAfter=3))
@@ -426,7 +673,7 @@ def build_resume(job, out_path: Path):
 
 def build_cover_letter(job, out_path: Path):
     doc = SimpleDocTemplate(str(out_path), pagesize=letter,
-                            topMargin=0.72 * inch, bottomMargin=0.66 * inch,
+                            topMargin=0.62 * inch, bottomMargin=0.55 * inch,
                             leftMargin=0.95 * inch, rightMargin=0.95 * inch,
                             title=f"Ahmad Zarei - Cover Letter - {job.get('company','')}",
                             author="Ahmad Zarei")
@@ -437,12 +684,13 @@ def build_cover_letter(job, out_path: Path):
                          textColor=GRAY, spaceAfter=1)
     meta = ParagraphStyle("m", fontName="Carlito", fontSize=9, leading=12,
                           textColor=GRAY, spaceAfter=2)
-    body = ParagraphStyle("b", fontName="Carlito", fontSize=10, leading=14.2,
-                          textColor=DARK, alignment=TA_JUSTIFY, spaceAfter=9)
+    body = ParagraphStyle("b", fontName="Carlito", fontSize=10, leading=14.1,
+                          textColor=DARK, alignment=TA_JUSTIFY, spaceAfter=7.2)
 
-    company = job.get("company", "your team")
+    company = (job.get("company") or "").strip()
     title = job.get("title", "QA Engineer")
     location = job.get("location", "Yerevan")
+    greeting = f"Dear {company} team," if company else "Dear hiring team,"
 
     story = [
         Paragraph("<b>AHMAD ZAREI</b>", name),
@@ -451,21 +699,31 @@ def build_cover_letter(job, out_path: Path):
         Spacer(1, 4),
         HRFlowable(width="100%", thickness=1, color=NAVY),
         Spacer(1, 12),
-        Paragraph(f"Dear {company} team,", body),
+        Paragraph(greeting, body),
     ]
 
-    opener = pick_opener(job).format(title=title, company=company, location=location,
-                                     country=country_from_job(job))
+    opener = pick_opener(job).format(title=title, company=company or "your team",
+                                     location=location, country=country_from_job(job))
+    if not company:
+        opener = opener.replace(" at your team", "")
     story.append(Paragraph(opener, body))
 
+    seen_text = set()
     for block in pick_body(job):
+        # Backstop: two blocks sharing a sentence reads as padding. Compare the
+        # first sixty characters, which is enough to catch a repeated opener.
+        head = block[:60]
+        if head in seen_text:
+            continue
+        seen_text.add(head)
         story.append(Paragraph(block, body))
 
     for gap in pick_gaps(job):
         story.append(Paragraph(gap, body))
 
     story.append(Paragraph(CLOSERS["portfolio"].format(portfolio=PORTFOLIO), body))
-    story.append(Paragraph(CLOSERS["honest_ai"], body))
+    if len(pick_body(job)) < 5 or len(pick_gaps(job)) < 2:
+        story.append(Paragraph(CLOSERS["honest_ai"], body))
 
     story.append(Spacer(1, 2))
     story.append(Paragraph("Best regards,", body))
@@ -478,15 +736,25 @@ def build_cover_letter(job, out_path: Path):
 # Entry point
 # --------------------------------------------------------------------------- #
 
+_TRANSLIT = str.maketrans({
+    "ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue",
+    "ß": "ss", "é": "e", "è": "e", "ê": "e", "á": "a", "à": "a",
+    "í": "i", "ó": "o", "ú": "u", "ñ": "n", "ç": "c", "ø": "o", "å": "a",
+})
+
+
 def safe_name(text: str) -> str:
-    return re.sub(r"[^A-Za-z0-9]+", "_", text or "job").strip("_")[:40]
+    """Filenames a person can read. Transliterates the accents that show up in
+    European company names rather than dropping the letter."""
+    text = (text or "job").translate(_TRANSLIT)
+    return re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")[:40]
 
 
 def tailor(job, out_dir: Path):
     """Builds both PDFs. Returns (resume_path, letter_path)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    company = safe_name(job.get("company", "job"))
+    company = safe_name(job.get("company") or job.get("name_hint") or "job")
     resume_path = out_dir / f"Ahmad_Zarei_Resume_{company}.pdf"
     letter_path = out_dir / f"Ahmad_Zarei_CoverLetter_{company}.pdf"
     build_resume(job, resume_path)
