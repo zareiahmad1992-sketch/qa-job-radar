@@ -70,6 +70,11 @@ ASSESSMENT = re.compile(
     re.I,
 )
 
+# LinkedIn puts the verdict in the tracking URL and leaves the body nearly empty,
+# so a word-only reader sees nothing. This catches email_email_jobs_application_rejected_01.
+LINKEDIN_VERDICT = re.compile(
+    r"application[_-]rejected|jobs_application_rejected", re.I)
+
 REJECTED = re.compile(
     r"(unfortunately|not (?:to )?(?:move|moving) forward|"
     r"will not be (?:moving|progressing|advancing)|"
@@ -85,7 +90,7 @@ APPLIED = re.compile(
     r"(your application (?:was|has been) (?:sent|submitted|received)|"
     r"(?:we|i) (?:have )?(?:received|got) your application|"
     r"application (?:successfully )?(?:received|submitted|confirmed)|"
-    r"thank (?:you|s) for (?:your application|applying|your interest)|"
+    r"thank(?:s| you)? for (?:your application|applying|your interest)|"
     r"your application to )",
     re.I,
 )
@@ -116,7 +121,7 @@ def classify(message):
     """
     text = f"{message['subject']}\n{message['body'][:3000]}"
     company = _guess_company(message)
-    if REJECTED.search(text):
+    if LINKEDIN_VERDICT.search(text) or REJECTED.search(text):
         return "Rejected", company, message["subject"]
     if INTERVIEW.search(text):
         return "Interview", company, message["subject"]
