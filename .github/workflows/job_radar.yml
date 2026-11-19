@@ -1,41 +1,83 @@
 name: QA Job Radar
 
+# Searches every two hours. Armenia and the ten feeds are read in full on every
+# run; the LinkedIn country and employer searches rotate, one shard per run, so
+# each run stays inside about forty queries instead of a hundred.
+
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Every two hours, on the hour, in Yerevan time (UTC+4):
+    #   00:00 UTC = 04:00 Yerevan   ... and so on, twelve runs a day.
+    - cron: '0 */2 * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Scan and print only, do not send to Telegram'
+        type: boolean
+        default: false
+      no_documents:
+        description: 'Skip the PDF resume and cover letter, text alerts only'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+concurrency:
+  group: job-radar-scan
+  cancel-in-progress: false
+
 jobs:
   scan-and-send:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.x"
+          python-version: '3.x'
 
-      - name: Scan sources and send new jobs
+      # reportlab builds the resume and cover letter PDFs, cryptography signs the
+      # Google service account token. Everything else is the standard library.
+      - name: Install dependencies
+        run: pip install --quiet reportlab cryptography
+
+      - name: Scan sources, send alerts, build documents, write sheet rows
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python job_radar.py --once
-
-      - name: Save seen-job state
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          TELEGRAM_CHANNELS: ${{ vars.TELEGRAM_CHANNELS }}
+          JOB_RADAR_TAILOR: ${{ inputs.no_documents == 'true' && '0' || '1' }}
         run: |
-          if [ -n "$(git status --porcelain -- seen_jobs.json)" ]; then
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python job_radar.py --dry-run
+          else
+            python job_radar.py --once
+          fi
+
+      - name: Save the seen-job state
+        run: |
+          # already-notified.json is committed alongside seen_jobs.json. It is the
+          # list that stops an old posting coming round again, and it is never
+          # trimmed by date the way seen_jobs.json is, so it has to survive
+          # between runs.
+          if [ -n "$(git status --porcelain -- seen_jobs.json already-notified.json)" ]; then
             git config user.name "qa-job-radar[bot]"
             git config user.email "qa-job-radar[bot]@users.noreply.github.com"
-            git add seen_jobs.json
+            git add seen_jobs.json already-notified.json
             git commit -m "Update seen QA jobs"
-            git push
+            for attempt in 1 2 3; do
+              git pull --rebase --autostash && git push && break
+              echo "push attempt $attempt failed, retrying"
+              sleep 5
+            done
           else
             echo "No state changes to commit."
           fi
