@@ -1684,19 +1684,33 @@ def normalise_url(url: str) -> str:
     return url
 
 
+# Sources that do not publish an employer name all fall back to this string.
+# Three postings on the live run collapsed to "notlisted|..." keys, which means a
+# QA role with no company name was indistinguishable from every other QA role with
+# no company name. It is a sentinel, not a company.
+UNKNOWN_COMPANY = "notlisted"
+
+
 def job_key(job_):
     """Identity for the seen list.
 
     Company plus title, not URL. The same role gets posted on Djinni and on
     LinkedIn and on the company's own board, and the URLs have nothing in common,
     so a URL-based key lets the same job through three times under three names.
-    The URL is still used as a tiebreaker when company and title are both empty.
+
+    When the source did not publish a company, the title alone is not an identity:
+    on the first real run, "Not listed" appeared as the company on three different
+    postings and all three shared the sentinel. Those fall back to the URL, which
+    is unique per posting, rather than to a key that collides.
     """
     company = re.sub(r"[^a-z0-9]", "", (job_.get("company") or "").lower())
     title = re.sub(r"[^a-z0-9]", "", (job_.get("title") or "").lower())
-    if company and title:
+    if company and company != UNKNOWN_COMPANY and title:
         return f"{company}|{title}"
-    return normalise_url(job_.get("url", ""))
+    url = normalise_url(job_.get("url", ""))
+    if url:
+        return url
+    return f"{company}|{title}" if (company or title) else ""
 
 
 # --------------------------------------------------------------------------- #
@@ -2061,8 +2075,18 @@ def normalise_title(title):
 
 
 def dedup_signature(j):
-    """Same job posted on Staff.am and LinkedIn should reach the chat once."""
-    return normalise_company(j["company"]) + "|" + normalise_title(j["title"])
+    """Same job posted on Staff.am and LinkedIn should reach the chat once.
+
+    A source that did not publish an employer name cannot be deduplicated by
+    company, because every such posting shares the "Not listed" sentinel. Three
+    live postings collapsed into one key on the first run. Those fall back to the
+    URL, which is per posting, so two different QA roles stay two roles.
+    """
+    company = normalise_company(j["company"])
+    title = normalise_title(j["title"])
+    if company.replace(" ", "") in ("notlisted", "notspecified", ""):
+        return normalise_url(j.get("url", "")) or f"{company}|{title}"
+    return company + "|" + title
 
 
 def collect():
@@ -2171,17 +2195,30 @@ def priority_rank(j):
 
     1    Armenia, on site or remote. Nothing to arrange.
     2    Remote, genuinely open. Contractor work is realistic.
-    2.5  Germany, on site or remote, and Europe with sponsorship offered.
-         Germany is here because he named it, not because of a sponsorship line.
+    2.4  Germany, on site. He named this market for on-site work, and the Blue
+         Card is the route that actually exists.
+    2.5  Europe elsewhere with sponsorship offered.
+    2.6  Germany, remote. A remote job that happens to name Germany.
     3    Remote but one country named and no sponsorship. Needs a question
          before any effort is spent.
     4    On site elsewhere in Europe with nothing said about permits.
     """
     tier = j["tier"]
     # Germany keeps its own row whether or not sponsorship is mentioned, so the
-    # 2.5 that follows must not pull it down to the same rank as the others.
+    # sponsored 2.5 below must not pull it down to the same rank as the others.
+    #
+    # Germany gets two ranks, not one, because the two kinds of German posting are
+    # not equally reachable:
+    #
+    #   2.4  Berlin, on site. He asked for this, and the EU Blue Card is a route
+    #        that exists. Highest rank available outside Armenia.
+    #   2.6  Remote, Germany. Still good, but it is a remote job that happens to
+    #        name Germany, not the move he asked about.
+    #
+    # Both sit above an unsponsored single-country remote role and below a fully
+    # open remote one.
     if tier == 25:
-        return 2.5
+        return 2.4 if not j["remote"] else 2.6
     sponsored = wants_sponsorship(j)
     if tier in (2, 3, 4) and sponsored:
         return 2.5
@@ -2279,7 +2316,7 @@ def run(dry_run=False, report=False, dump_json=False):
         if key in seen:
             return True
         company = normalise_key_part(job_.get("company"))
-        if company and f"company:{company}" in sheet:
+        if company and company != UNKNOWN_COMPANY and f"company:{company}" in sheet:
             return True
         return False
 

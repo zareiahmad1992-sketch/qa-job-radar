@@ -70,8 +70,8 @@ berlin_remote = dict(berlin, location="Remote, Germany", remote=True)
 check("remote Germany is also tier 25", r.assign_tier(berlin_remote) == 25,
       f"got {r.assign_tier(berlin_remote)}")
 berlin_v = dict(berlin, tier=25, remote=False)
-check("Germany ranks level with sponsored on-site, above single-country remote",
-      r.priority_rank(berlin_v) == 2.5, f"got {r.priority_rank(berlin_v)}")
+check("on-site Germany ranks above sponsored elsewhere and above single-country remote",
+      r.priority_rank(berlin_v) == 2.4, f"got {r.priority_rank(berlin_v)}")
 check("Germany has its own cap", 25 in r.MAX_PER_TIER)
 check("Germany is in the send order", 25 in r.TIER_ROWS)
 
@@ -159,6 +159,30 @@ check("Armenia is capped tighter than remote, so it cannot flood the chat",
 check("Germany has a real cap, not zero", r.MAX_PER_TIER[25] >= 4)
 check("caps add up to at least one run", sum(r.MAX_PER_TIER.values()) >= r.MAX_PER_RUN)
 
+print("\n3a. Germany ranks on-site above remote")
+def de(**kw):
+    d = {"title": "QA Engineer", "company": "Not listed", "location": "Remote",
+         "description": "", "restrictions": [], "remote": True, "relocation": False,
+         "salary": "", "source": "t", "url": "https://x/1", "tier": 2, "score": 70}
+    d.update(kw)
+    return d
+g_onsite = de(company="X", location="Berlin, Germany", remote=False, tier=25)
+g_remote = de(company="X", location="Remote, Germany", remote=True, tier=25)
+open_remote = de(location="Remote worldwide", tier=2)
+sponsored = de(location="Vienna, Austria", remote=False, tier=4,
+               description="visa sponsorship available")
+single = de(location="Remote (Poland)", tier=3)
+check("on-site Germany outranks remote Germany",
+      r.priority_rank(g_onsite) < r.priority_rank(g_remote),
+      f"{r.priority_rank(g_onsite)} vs {r.priority_rank(g_remote)}")
+check("open remote still outranks on-site Germany",
+      r.priority_rank(open_remote) < r.priority_rank(g_onsite),
+      f"{r.priority_rank(open_remote)} vs {r.priority_rank(g_onsite)}")
+check("on-site Germany outranks sponsored elsewhere",
+      r.priority_rank(g_onsite) < r.priority_rank(sponsored))
+check("remote Germany outranks an unsponsored single-country remote",
+      r.priority_rank(g_remote) < r.priority_rank(single))
+
 print("\n3b. the same posting never comes back")
 dup = {"title": "QA Engineer", "company": "Acme", "location": "Remote",
        "description": "", "restrictions": [], "remote": True,
@@ -182,6 +206,21 @@ check("the seeded mark is not a date, so age can never trim it",
       seeded["commit|qaengineer"] == r.ALREADY_SEEDED)
 check("a broken SPREADSHEET_ID URL is refused instead of silently skipped",
       r.sheet_keys() == set())
+
+# "Not listed" is a sentinel, not a company. On the first live run three different
+# postings shared it and collapsed into one key.
+un_a = {"title": "QA Role", "company": "Not listed", "location": "Remote",
+        "description": "", "restrictions": [], "remote": True, "relocation": False,
+        "salary": "", "source": "t", "url": "https://a.example/1"}
+un_b = dict(un_a, url="https://b.example/2")
+check("two unnamed postings are not the same job", r.job_key(un_a) != r.job_key(un_b))
+check("an unnamed posting keys on its URL", r.job_key(un_a) == "https://a.example/1")
+check("two unnamed postings are not deduplicated together",
+      r.dedup_signature(un_a) != r.dedup_signature(un_b))
+check("a named posting still keys on company+title",
+      r.job_key(dict(un_a, company="Acme")) == "acme|qarole")
+check("the sentinel does not suppress a whole company",
+      r.UNKNOWN_COMPANY == "notlisted")
 
 print("\n4. messages")
 msg = r.format_job(fake_job(2, 80, "we offer visa sponsorship and relocation support"), 2)
