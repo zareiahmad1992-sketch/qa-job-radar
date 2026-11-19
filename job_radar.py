@@ -4,13 +4,16 @@ QA Job Radar — software QA roles for a candidate based in Yerevan, Armenia.
 
 Priority order for what gets sent:
 
-  🥇 Tier 1  Remote, open to Europe / EMEA / worldwide / Armenia
-  🥈 Tier 2  Armenia — on-site or remote, any employer
-  🥉 Tier 3  On-site in Europe, but only when the posting mentions visa
-             sponsorship or paid relocation
+  1   Armenia — on-site or remote, any employer
+  2   Remote and genuinely open: worldwide, EMEA, Europe with no country named
+  25  Germany — on-site or remote. He asked for Germany by name, both ways
+  3   Remote, but one European country is named
+  4   On-site elsewhere in Europe, and only when sponsorship or relocation is
+      actually mentioned
 
-Anything outside those three tiers is dropped, including the manufacturing and
-hardware quality jobs that dominate the "quality engineer" search results.
+Anything outside those rows is dropped, including the manufacturing and hardware
+quality jobs that dominate the "quality engineer" search results, and anything
+already in the Jobs tab of his sheet.
 
 Usage:
     python job_radar.py --once        scan and send to Telegram
@@ -49,8 +52,21 @@ USER_AGENT = "Mozilla/5.0 (compatible; QAJobRadar/2.0)"
 # tier 3 (remote, one country named) get the most room; tier 4 is on-site in
 # Europe and drops to the smallest share, because every one of those still needs
 # a work permit that the posting rarely offers.
-MAX_PER_TIER = {1: 8, 2: 10, 3: 6, 4: 2}
+# Armenia was capped at 8 and was the row that flooded the chat, because the
+# same dozen Yerevan employers repost the same roles. Four a run is enough to
+# notice a new one; anything above that is repetition he has already seen.
+#
+# Germany gets its own row because Ahmad asked for it by name. It is the one
+# market he named for BOTH on-site and remote, so it sits at priority 2.5,
+# level with remote work, rather than waiting at the bottom with the other
+# on-site countries.
+MAX_PER_TIER = {1: 4, 2: 10, 25: 6, 3: 6, 4: 2}
 MAX_PER_RUN = 18
+
+# Priority rows, lowest first. 25 is Germany. It sits between the truly open
+# remote roles and the ones that name a single country, because Germany both
+# hires the most from outside the EU and is the one country he singled out.
+TIER_ROWS = (1, 2, 25, 3, 4)
 
 
 # --------------------------------------------------------------------------- #
@@ -100,6 +116,13 @@ HARD_EXCLUDE = [
     # on-site outside the two regions we accept
     "must relocate to the us", "us work authorization", "must be based in the us",
     "only us residents", "w2 only", "authorized to work in the us",
+    # Switzerland states work authorisation as an eligibility condition, and the
+    # quota plus labour market test makes a permit for a QA role a non starter.
+    # Swiss remote roles still get through, because this matches the permit line
+    # rather than the country.
+    "swiss/eu/efta work permit", "swiss work permit", "switzerland work permit",
+    "eligibility to work in switzerland", "right to work in switzerland",
+    "arbeit in der schweiz", "aufenthaltsbewilligung",
 ]
 
 # Postings that need a language Ahmad does not speak. Kept narrow so a job that
@@ -380,6 +403,10 @@ def linkedin_shards():
 # not appear in a location field. These queries exist only to find those.
 SPONSORSHIP_SEARCHES = [
     ("QA Engineer visa sponsorship", "Germany"),
+    ("QA Automation Engineer", "Germany"),
+    ("SDET", "Germany"),
+    ("QA Engineer remote", "Germany"),
+    ("Software Tester", "Germany"),
     ("QA Engineer visa sponsorship", "Netherlands"),
     ("QA Engineer visa sponsorship", "Poland"),
     ("QA Engineer visa sponsorship", "Romania"),
@@ -454,7 +481,7 @@ def strip_tags(text: str) -> str:
 
 
 def job(source, title, company, location, url, description="", published="",
-        remote=None, restrictions=None, relocation=False):
+        remote=None, restrictions=None, relocation=False, tags=None):
     return {
         "source": source,
         "title": tidy_title(clean_text(title)),
@@ -466,6 +493,7 @@ def job(source, title, company, location, url, description="", published="",
         "remote": remote,
         "restrictions": [r.lower() for r in as_list(restrictions)],
         "relocation": relocation,
+        "tags": [str(t).lower() for t in as_list(tags)],
     }
 
 
@@ -590,6 +618,7 @@ def parse_arbeitnow():
                 item.get("description"), item.get("created_at"),
                 remote=bool(item.get("remote")),
                 restrictions=[item.get("location")],
+                tags=item.get("tags") or [],
             ))
     return out
 
@@ -1114,6 +1143,33 @@ _WORD_TERM = re.compile(
 )
 
 
+# Boards tag a posting with its field, and that tag is more reliable than the
+# title. "AI Automation Engineer" at United Media is filed under Marketing and is
+# about building an investor audience, not testing software. The title passed the
+# QA patterns; the tag does not lie.
+NON_QA_FIELDS = [
+    "marketing", "online marketing", "public relations", "corporate communication",
+    "sales", "business development", "personnel", "human resources", "recruiting",
+    "customer service", "content", "seo", "social media", "brand", "finance",
+    "accounting", "legal", "administration", "product management", "design",
+    "graphic", "copywriting", "translation", "teaching", "nursing", "logistics",
+    "warehouse", "driver", "retail", "hospitality", "call center",
+]
+
+QA_FIELD_HINTS = ["qa", "quality", "test", "automation", "sdet", "engineering"]
+
+
+def tagged_out_of_field(job_) -> bool:
+    """True when the board's own category says this is not a testing job."""
+    tags = job_.get("tags") or []
+    if not tags:
+        return False
+    joined = " ".join(str(t).lower() for t in tags)
+    if any(hint in joined for hint in QA_FIELD_HINTS):
+        return False
+    return any(field in joined for field in NON_QA_FIELDS)
+
+
 def is_hard_excluded(job_) -> bool:
     text = haystack(job_)
     # Long, unambiguous phrases are still plain substrings.
@@ -1202,6 +1258,89 @@ def locked_to_other_country(job_) -> bool:
     return any(marker in text for marker in COUNTRY_LOCK_MARKERS)
 
 
+# --------------------------------------------------------------------------- #
+# Geography self-test
+#
+# Run with:  python3 src/job_radar.py --selftest-geo
+# Every case below is a real posting that behaved wrongly at some point, or a
+# wording Ahmad has been rejected by. A change that breaks one of these should be
+# caught before it reaches GitHub Actions.
+# --------------------------------------------------------------------------- #
+
+GEO_SELFTEST = [
+    # (location, want, why it is in the list)
+    ("Remote worldwide",                        True,     "the plain good case"),
+    ("Fully remote worldwide",                  True,     ""),
+    ("Remote",                                  True,     "no country attached"),
+    ("Remote, Europe",                          True,     "region, no single country"),
+    ("Remote, EMEA",                            True,     ""),
+    ("Remote - Europe",                         True,     ""),
+    # Armenia is Tier 1 via is_armenia() and never reaches remote_is_open, so it
+    # is checked separately below rather than in this table.
+
+    ("Remote - Countries of Europe or Ukraine", False,
+     "RALABS and CORE WILL SOFT both rejected on this exact line"),
+    ("Remote (UA)",                             False,    "Djinni country tag"),
+    ("EU only",                                 False,    "Armenia is not in the EU"),
+    ("Remote (EU citizens only)",               False,    ""),
+    ("Remote - EU work permit required",        False,    ""),
+    ("Remote (USA only)",                       False,    ""),
+    ("Bangalore, India",                        False,    "Fidelity"),
+    ("Remote, India",                           False,    ""),
+    # These resolve to "single", which Tier 3 renders as one country named. They
+    # must not be read as a friendly open region.
+    ("Remote (Poland)",                         "single", ""),
+    ("Remote, Poland only",                     "single", ""),
+    ("Remote (Hungary)",                        "single", "HexaIO"),
+    ("Budapest, Hungary",                       "single", ""),
+    ("Berlin, Germany",                         "single", ""),
+]
+
+
+def _geo_selftest() -> int:
+    """Print the geography table and return the number of failures."""
+    failures = 0
+    print(f"{'location':45} {'want':9} {'got':10} result")
+    print("-" * 82)
+    for location, want, why in GEO_SELFTEST:
+        job_ = {
+            "title": "QA Engineer",
+            "location": location,
+            "remote": "remote" in location.lower(),
+            "description": "",
+            "restrictions": [],
+            "company": "X",
+            "url": "",
+        }
+        got = remote_is_open(job_) or "-"
+        if want is True:
+            ok = got != "-"
+        elif want is False:
+            ok = got == "-"
+        else:
+            ok = got == want
+        if not ok:
+            failures += 1
+        note = "" if ok else f"   <- {why or 'regression'}"
+        print(f"{location:45} {str(want):9} {got:10} {'OK' if ok else 'FAIL'}{note}")
+    # Armenia is handled by is_armenia() and gets Tier 1, bypassing
+    # remote_is_open entirely. Check that separately.
+    for home in ("Yerevan, Armenia", "Remote, Armenia", "Armenia"):
+        job_ = {"title": "QA Engineer", "location": home, "remote": "remote" in home.lower(),
+                "description": "", "restrictions": [], "company": "X", "url": ""}
+        ok = is_armenia(job_)
+        if not ok:
+            failures += 1
+        print(f"{home:45} {'True':9} {'tier 1':10} {'OK' if ok else 'FAIL'}")
+
+    print()
+    if failures:
+        print(f"{failures} FAILED")
+    else:
+        print(f"all {len(GEO_SELFTEST) + 3} geography checks passed")
+    return failures
+
+
 def location_text(job_) -> str:
     """Everything the posting says about where it hires, lowercased."""
     return " ".join(job_["restrictions"] + [job_["location"]]).lower()
@@ -1209,6 +1348,33 @@ def location_text(job_) -> str:
 
 def is_armenia(job_) -> bool:
     return any(m in location_text(job_) for m in ARMENIA_MARKERS)
+
+
+# Wording that means Germany, including the German-language forms that a
+# deutschsprachige Anzeige uses in the location field.
+GERMANY_MARKERS = [
+    "germany", "deutschland", "bundesrepublik", "brd", "dach region",
+    "berlin", "munich", "münchen", "muenchen", "hamburg", "frankfurt",
+    "cologne", "köln", "koeln", "stuttgart", "düsseldorf", "duesseldorf",
+    "dusseldorf", "leipzig", "dresden", "nuremberg", "nürnberg", "nurnberg",
+    "hanover", "hannover", "bremen", "bonn", "karlsruhe", "mannheim",
+    "potsdam", "jena", "darmstadt", "essen", "dortmund", "bielefeld",
+]
+
+
+def is_germany(job_) -> bool:
+    """True when the posting is in Germany, on-site or remote.
+
+    Deliberately separate from EUROPE_COUNTRIES. Germany is the one country he
+    named for on-site work as well as remote, so it is ranked on its own and
+    should not depend on the sponsorship wording that the other on-site
+    countries need.
+
+    A posting that says "Remote, Europe" is not German. A posting that says
+    "Berlin, Germany" or "Munich" or "Remote, Deutschland" is.
+    """
+    text = location_text(job_)
+    return any(m in text for m in GERMANY_MARKERS)
 
 
 def named_countries(job_) -> list:
@@ -1243,6 +1409,40 @@ BLOCKED_COUNTRY_CODES = {"ua", "ru", "by", "kz", "uz", "us", "ca", "in", "br",
                          "sa", "qa", "kw", "ma", "tn", "eg"}
 
 
+# Wording that explicitly EXCLUDES Armenia. Ahmad was rejected by Ralabs and
+# CoreWillSoft on exactly this line: "Countries of Europe or Ukraine". Armenia is
+# in neither group, so the role was never open to him however good the CV was.
+# These are checked before anything else, because "europe" on its own would
+# otherwise be read as a friendly region.
+EXCLUDES_ARMENIA = [
+    "countries of europe or ukraine",
+    "europe or ukraine",
+    "europe and ukraine only",
+    "eu or ukraine",
+    "eu/ukraine",
+    "europe, ukraine",
+    "ukraine or europe",
+    "europe without armenia",
+    "eu only", "eu-only", "eu only.",
+    "europe only", "europe-only",
+    "european union only",
+    "only eu", "only europe",
+    "must be based in the eu", "must reside in the eu", "must be located in the eu",
+    "eu residency", "eu citizens only", "eu citizenship",
+    "eu work permit", "eu work authorization", "right to work in the eu",
+    "european work permit", "european passport",
+    "eea only", "eea citizens",
+    "schengen only",
+    "within the eu", "reside in europe",
+]
+
+
+def excludes_armenia(job_) -> bool:
+    """True when the posting names a group Armenia is not in."""
+    text = location_text(job_)
+    return any(marker in text for marker in EXCLUDES_ARMENIA)
+
+
 def remote_is_open(job_) -> str:
     """How open is this remote role? Returns 'worldwide', 'region', 'single' or ''.
 
@@ -1250,12 +1450,32 @@ def remote_is_open(job_) -> str:
     matched everything, including "Remote (UA)". Wording matters more than the
     presence of the word remote: "remote worldwide" and "remote, Poland only" are
     not the same job.
+
+    Order matters. An explicit Armenia exclusion is checked first, then a named
+    country, and only then the vague regional wording. The previous order let
+    "Remote - Countries of Europe or Ukraine" through as a friendly region,
+    because it never checked what the region actually was.
     """
     text = location_text(job_)
+
+    # Nothing else matters if the posting says Armenia is out.
+    if excludes_armenia(job_):
+        return ""
+
+    # A named country decides, before any regional wording gets a say. This is
+    # what stops "Remote (Poland)" and "Berlin, Germany" being read as open.
+    countries = named_countries(job_)
+    if len(countries) > 1:
+        return "region"
+    if len(countries) == 1:
+        single = countries[0]
+        if single in EUROPE_COUNTRIES:
+            return "single"
+        return ""
+
     if any(m in text for m in REMOTE_WORLDWIDE):
         return "worldwide"
-    countries = named_countries(job_)
-    if any(m in text for m in REMOTE_REGION) and not countries:
+    if any(m in text for m in REMOTE_REGION):
         return "region"
     if len(countries) > 1:
         return "region"
@@ -1287,10 +1507,11 @@ def wants_sponsorship(job_) -> bool:
 def assign_tier(job_):
     """Returns 1, 2, 3, 4 or None. Lower is better.
 
-    1  Armenia, on-site or remote
-    2  Remote and genuinely open, worldwide or regional
-    3  Remote but one European country named
-    4  On-site in Europe with visa sponsorship or relocation offered
+    1   Armenia, on-site or remote
+    2   Remote and genuinely open, worldwide or regional
+    25  Germany, on-site or remote. He asked for Germany by name, both ways
+    3   Remote but one European country named
+    4   On-site in Europe with visa sponsorship or relocation offered
     """
     # Tier 1: Armenia, no relocation, no visa, start immediately
     if is_armenia(job_):
@@ -1299,16 +1520,31 @@ def assign_tier(job_):
     if job_["remote"]:
         openness = remote_is_open(job_)
         if openness in ("worldwide", "region"):
-            return 2
+            # "Remote, Europe" is not German. Only wording that actually names
+            # Germany gets the Germany row; everything else open stays tier 2,
+            # because working from Yerevan beats moving to Berlin.
+            return 25 if is_germany(job_) else 2
         if openness == "single":
-            # A European country is named. Readable, but flag it.
+            # A remote role that names Germany usually means "you must be in
+            # Germany", which is the case he asked for, so it keeps the Germany
+            # row instead of dropping to the generic single-country one.
+            if is_germany(job_):
+                return 25
+            # Any other European country named. Readable, but flag it.
             if set(named_countries(job_)) & set(EUROPE_COUNTRIES):
                 return 3
         return None
 
-    # On-site. Only worth a look when they offer to move him.
+    # Germany, on-site, no sponsorship language needed. He asked for Germany by
+    # name for both on-site and remote work, and the EU Blue Card route makes a
+    # German employer the most realistic on-site option he has. It sits at its own
+    # row, below open remote and above the single-country remote roles.
+    text = location_text(job_)
+    if is_germany(job_):
+        return 25
+
+    # On-site elsewhere. Only worth a look when they offer to move him.
     if wants_sponsorship(job_):
-        text = location_text(job_)
         in_europe = (any(c in text for c in EUROPE_COUNTRIES)
                      or any(city in text for city in EUROPE_CITIES))
         if in_europe:
@@ -1463,6 +1699,96 @@ def job_key(job_):
     return normalise_url(job_.get("url", ""))
 
 
+# --------------------------------------------------------------------------- #
+# Remembering what has already been sent
+#
+# Three layers, because each one on its own let the same posting back in:
+#
+#   1  seen_jobs.json         every key ever sent. Capped at 3000 and sorted,
+#                             so on a long enough run the oldest keys fell off
+#                             the end and those postings came round again.
+#   2  the Jobs tab           the sheet is the record of what he has already
+#                             seen or applied to. The radar never read it, so a
+#                             posting already sitting in his sheet came back.
+#   3  already-notified.json  the keys as sent, kept separate from the sorted
+#                             seen list, so age never deletes them.
+#
+# The third is also seeded with his existing applications the first time it is
+# empty, which is what stops the eighteen Armenia rows he already applied to
+# from arriving again.
+# --------------------------------------------------------------------------- #
+
+ALREADY_FILE = Path(__file__).with_name("already-notified.json")
+SHEET_TAB = "Jobs"
+
+# The value stored for keys that came from the sheet rather than from a send. It
+# is deliberately not a date: seen_jobs.json is trimmed by date and this file is
+# not, so a key that looks like a date invites the same trimming by mistake.
+ALREADY_SEEDED = "seed:sheet"
+
+
+def normalise_key_part(text) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def load_already():
+    """The permanent list of postings already notified. Never trimmed by date."""
+    try:
+        raw = json.loads(ALREADY_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_already(already):
+    ALREADY_FILE.write_text(
+        json.dumps(already, ensure_ascii=False, indent=1, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def sheet_keys() -> set:
+    """Company|title for every row already in the Jobs tab.
+
+    Reads the sheet directly over the Sheets API rather than through
+    job_sheet_sync, so a radar run does not depend on the sheet sync module
+    importing cleanly. Returns an empty set on any failure: a check that cannot
+    reach the sheet must never stop the alerts going out, it should only make
+    the duplicate guard weaker for that run.
+    """
+    spreadsheet_id = os.getenv("SPREADSHEET_ID", "").strip()
+    if not spreadsheet_id or "docs.google.com" in spreadsheet_id:
+        # The full URL in the secret is what broke every Actions run before. Say
+        # so loudly here instead of silently skipping the duplicate check.
+        if "docs.google.com" in spreadsheet_id:
+            print("SPREADSHEET_ID is a URL, not an ID. Duplicate check against "
+                  "the sheet is OFF until it is fixed.")
+        return set()
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from job_sheet_sync import access_token, sheets_get
+        token = access_token()
+        rows = sheets_get(token, spreadsheet_id, f"{SHEET_TAB}!A1:E900")
+    except Exception as exc:
+        print(f"Sheet duplicate check skipped: {type(exc).__name__}: {exc}")
+        return set()
+
+    keys = set()
+    for row in rows[1:]:
+        if len(row) < 4:
+            continue
+        company = normalise_key_part(row[2])
+        title = normalise_key_part(row[3])
+        if company and title:
+            keys.add(f"{company}|{title}")
+        # Also record each half, so a reworded title from a different board on
+        # the same company still matches. Stored with a prefix so a company name
+        # can never collide with a company|title pair.
+        if company:
+            keys.add(f"company:{company}")
+    return keys
+
+
 def load_seen():
     """Returns a dict of key -> first-seen ISO date."""
     try:
@@ -1560,6 +1886,7 @@ def telegram_send_document(pdf_path, caption=""):
 TIER_BADGE = {
     1: "🇦🇲 Armenia · no paperwork",
     2: "🌍 Remote · open",
+    25: "🇩🇪 Germany · your priority",
     3: "🌍 Remote · one country named",
     4: "🛂 On-site Europe",
 }
@@ -1567,6 +1894,9 @@ TIER_BADGE = {
 TIER_NOTE = {
     1: "",
     2: "",
+    25: "Germany, the country you asked for. Both on-site and remote land here, "
+        "and the EU Blue Card is the route that actually exists for a QA "
+        "engineer with five years.",
     3: "The country is named. Worth one question about a contractor contract "
        "before you spend an evening on it.",
     4: "On-site, so a permit is needed. Confirm they will support one before "
@@ -1751,7 +2081,7 @@ def collect():
     kept = []
     stats = {"total": 0, "not_qa": 0, "scam_blocked": 0, "hard_excluded": 0,
              "language": 0, "country_locked": 0, "djinni_detail_blocked": 0,
-             "too_old": 0, "out_of_scope": 0, "kept": 0}
+             "too_old": 0, "wrong_field": 0, "out_of_scope": 0, "kept": 0}
     for _, jobs in all_jobs:
         for j in jobs:
             stats["total"] += 1
@@ -1765,6 +2095,9 @@ def collect():
                 continue
             if is_hard_excluded(j):
                 stats["hard_excluded"] += 1
+                continue
+            if tagged_out_of_field(j):
+                stats["wrong_field"] += 1
                 continue
             if needs_missing_language(j):
                 stats["language"] += 1
@@ -1838,14 +2171,17 @@ def priority_rank(j):
 
     1    Armenia, on site or remote. Nothing to arrange.
     2    Remote, genuinely open. Contractor work is realistic.
-    2.5  Europe with sponsorship offered, remote or on site. Same level as 2,
-         because a sponsored on-site role is as reachable as an unsponsored
-         remote one, and often more so.
+    2.5  Germany, on site or remote, and Europe with sponsorship offered.
+         Germany is here because he named it, not because of a sponsorship line.
     3    Remote but one country named and no sponsorship. Needs a question
          before any effort is spent.
-    4    On site in Europe with nothing said about permits. Last, always.
+    4    On site elsewhere in Europe with nothing said about permits.
     """
     tier = j["tier"]
+    # Germany keeps its own row whether or not sponsorship is mentioned, so the
+    # 2.5 that follows must not pull it down to the same rank as the others.
+    if tier == 25:
+        return 2.5
     sponsored = wants_sponsorship(j)
     if tier in (2, 3, 4) and sponsored:
         return 2.5
@@ -1871,15 +2207,43 @@ def trim_to_caps(jobs):
     the dry run printed the raw list and the two disagreed.
     """
     trimmed = []
-    for tier_value in (1, 2, 3, 4):
+    for tier_value in TIER_ROWS:
         bucket = sorted([j for j in jobs if j["tier"] == tier_value], key=send_priority)
         trimmed.extend(bucket[:MAX_PER_TIER[tier_value]])
     trimmed.sort(key=send_priority)
     return trimmed
 
 
+def seed_from_sheet(already, sheet) -> int:
+    """Writes every sheet row into the permanent notified list, once.
+
+    This is the step that stops the eighteen Armenia rows he has already
+    applied to from arriving again on the next run. It runs only when the
+    permanent list is empty, so clearing already-notified.json is also the way
+    to deliberately forget everything and start over.
+
+    Returns how many keys were added.
+    """
+    if already:
+        return 0
+    added = 0
+    today = datetime.now(timezone.utc).date().isoformat()
+    for key in sheet:
+        if ":" in key and key.startswith("company:"):
+            continue
+        if key not in already:
+            already[key] = ALREADY_SEEDED
+            added += 1
+    return added
+
+
 def run(dry_run=False, report=False, dump_json=False):
     seen = load_seen()
+    already = load_already()
+    sheet = sheet_keys()
+    seeded = seed_from_sheet(already, sheet)
+    if seeded:
+        print(f"Seeded {seeded} posting(s) from the Jobs tab as already seen.")
     jobs, stats = collect()
 
     if dump_json:
@@ -1900,19 +2264,48 @@ def run(dry_run=False, report=False, dump_json=False):
         return
 
     today = datetime.now(timezone.utc).date().isoformat()
-    new = [j for j in jobs if job_key(j) not in seen]
+
+    def already_sent(job_) -> bool:
+        """True when this posting has reached him before, by any route.
+
+        checked in order of cheapest first: the permanent notified list, then the
+        rolling seen list, then the sheet. The sheet carries both an exact
+        company|title key and a company-only key, so a role at a company already
+        in the sheet under a slightly different title does not come back either.
+        """
+        key = job_key(job_)
+        if key in already:
+            return True
+        if key in seen:
+            return True
+        company = normalise_key_part(job_.get("company"))
+        if company and f"company:{company}" in sheet:
+            return True
+        return False
+
+    before = len(jobs)
+    new = [j for j in jobs if not already_sent(j)]
+    suppressed = before - len(new)
+    if suppressed:
+        print(f"Dropped {suppressed} posting(s) already sent or already in the sheet.")
+    stats["already_seen"] = suppressed
+
     # Tier first, then score inside the tier.
     new.sort(key=send_priority)
     for j in new:
-        seen[job_key(j)] = today
+        key = job_key(j)
+        seen[key] = today
+        already[key] = today
 
     if dry_run:
         to_send = trim_to_caps(new)
         counts = {}
         for j in to_send:
             counts[j["tier"]] = counts.get(j["tier"], 0) + 1
-        print(f"\n{len(new)} new job(s) matched. {len(to_send)} would be sent:")
-        for tier_value in (1, 2, 3, 4):
+        print(f"\n{len(new)} job(s) matched. {len(to_send)} would be sent:")
+        if suppressed:
+            print(f"   ({suppressed} dropped as already sent or already in the sheet)")
+        for tier_value in TIER_ROWS:
             if counts.get(tier_value):
                 print(f"   tier {tier_value}: {counts[tier_value]}")
         print()
@@ -2014,7 +2407,24 @@ def run(dry_run=False, report=False, dump_json=False):
             print(f"Heartbeat failed: {exc}")
 
     save_seen(seen)
+    save_already(already)
     print(f"Sent {sent} of {len(new)} new job(s).")
+
+
+def report_suppressed():
+    """--why: read-only. Says how the duplicate layers are doing."""
+    seen = load_seen()
+    already = load_already()
+    sheet = sheet_keys()
+    print(f"seen_jobs.json        {len(seen):5d} keys")
+    print(f"already-notified.json {len(already):5d} keys")
+    print(f"Jobs tab              {len(sheet):5d} keys "
+          f"({sum(1 for k in sheet if k.startswith('company:'))} companies)")
+    if not already:
+        print("\nalready-notified.json is empty, so the next run will seed it "
+              "from the Jobs tab.")
+    if os.getenv("SPREADSHEET_ID", "").startswith("http"):
+        print("\nSPREADSHEET_ID is a URL. It must be the bare ID.")
 
 
 def main():
@@ -2022,9 +2432,20 @@ def main():
     parser.add_argument("--once", action="store_true", help="scan once and send to Telegram")
     parser.add_argument("--dry-run", action="store_true", help="scan once, print only")
     parser.add_argument("--report", action="store_true", help="print everything that passed, grouped by tier")
+    parser.add_argument("--selftest-geo", action="store_true",
+                        help="check the geography filter against known cases and exit")
+    parser.add_argument("--why", action="store_true",
+                        help="show what the duplicate layers remember, then exit")
     parser.add_argument("--json", action="store_true",
                         help="also write radar_jobs.json for job_sheet_sync.py")
     args = parser.parse_args()
+
+    if args.selftest_geo:
+        raise SystemExit(_geo_selftest())
+
+    if args.why:
+        report_suppressed()
+        return
 
     if args.report or args.json:
         run(report=args.report, dump_json=args.json)

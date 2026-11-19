@@ -283,18 +283,51 @@ Add two GitHub Actions secrets:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-The workflow runs every 15 minutes. `seen_jobs.json` keeps a rolling list of the
-last 3,000 job URLs that were already sent, so nothing repeats.
+Three things decide what does not get sent twice, and each covers a hole the
+previous one left:
 
-At most 8 jobs go out per run. If more than that match, the rest wait for the next
-scan, which keeps a backlog from flooding the chat.
+| layer | file | what it remembers | why it exists |
+|---|---|---|---|
+| 1 | `seen_jobs.json` | every key sent, with its date | cheap, but trimmed to 3,000 entries by date, so the oldest quietly fell off and those postings returned |
+| 2 | the **Jobs tab** | company + title of every row already in the sheet | the radar never read the sheet, so anything he had already seen there came back |
+| 3 | `already-notified.json` | the same keys, never trimmed | layer 1 could forget; this one cannot |
+
+The first time `already-notified.json` is empty it is seeded from the Jobs tab in
+full, which is what stops the eighteen Armenia rows he has already applied to
+from arriving again. To forget everything on purpose, delete that file: the next
+run seeds it again from the sheet.
+
+Tiers, in send order:
+
+| row | badge | meaning | cap |
+|---|---|---|---|
+| 1 | 🇦🇲 Armenia | on-site or remote, no paperwork | 4 |
+| 2 | 🌍 Remote · open | worldwide, EMEA, Europe with no country named | 10 |
+| 25 | 🇩🇪 Germany | on-site **or** remote. He asked for Germany by name | 6 |
+| 3 | 🌍 Remote · one country named | needs a contractor question first | 6 |
+| 4 | 🛂 On-site Europe | sponsorship mentioned | 2 |
+
+Armenia was capped at 8 and was the row that flooded the chat. Four a run is
+enough to notice a new role; above that it is the same Yerevan employers
+reposting.
+
+At most 18 jobs go out per run. If more than that match, the rest wait for the
+next scan, which keeps a backlog from flooding the chat.
 
 ## Files
 
 ```
 job_radar.py                    the scanner
-seen_jobs.json                  rolling list of already-sent jobs
+seen_jobs.json                  rolling list of already-sent jobs (trimmed by date)
+already-notified.json           permanent list of already-sent jobs (never trimmed)
 .github/workflows/job_radar.yml the cron job
+```
+
+Two read-only checks, safe to run anywhere:
+
+```
+python job_radar.py --selftest-geo   # 22 known postings, geography must agree
+python job_radar.py --why            # what each duplicate layer remembers
 ```
 
 ## The Google Sheet tracker

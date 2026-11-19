@@ -135,6 +135,7 @@ def sheets_append(token: str, spreadsheet_id: str, rows: list):
 TIER_LABEL = {
     1: "1 Armenia",
     2: "2 Remote open",
+    25: "3 Germany",          # the row Ahmad asked for by name, both on-site and remote
     3: "3 Remote 1 country",
     4: "4 Sponsorship",
 }

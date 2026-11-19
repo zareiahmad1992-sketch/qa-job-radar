@@ -27,7 +27,8 @@ qa-job-radar/
 ├── tailor.py                    ساخت رزومه و کاورلتر PDF
 ├── test_radar.py                تست خودکار
 ├── channels.json                لیست کانال‌های تلگرام
-├── seen_jobs.json               حافظه آگهی‌های دیده‌شده
+├── seen_jobs.json               حافظه آگهی‌های دیده‌شده (با تاریخ، trim می‌شود)
+├── already-notified.json        حافظه دائمی — هرگز trim نمی‌شود. باگ تکرار از اینجا بود
 ├── seen_replies.json            حافظه پاسخ‌های دیده‌شده
 ├── REJECT_FAST.md               فیلتر رد سریع آگهی
 └── README.md

@@ -47,6 +47,34 @@ check("no duplicates in search list",
 check("contractor markets come first",
       r.SEARCH_COUNTRIES[:3] == ["Poland", "Portugal", "Romania"])
 
+print("\n1b. Germany is its own row")
+GERMANY_CASES = ["Berlin, Germany", "Munich", "München", "Remote, Deutschland",
+                 "Frankfurt am Main", "Hamburg, hybrid", "Remote - DACH region"]
+NOT_GERMANY = ["Remote, Europe", "Vienna, Austria", "Zurich, Switzerland",
+               "Tbilisi, Georgia", "Warsaw, Poland"]
+for loc in GERMANY_CASES:
+    check(f"is_germany({loc!r})",
+          r.is_germany({"location": loc, "restrictions": [], "title": "QA",
+                        "description": "", "remote": True}))
+for loc in NOT_GERMANY:
+    check(f"is_germany({loc!r}) is False",
+          not r.is_germany({"location": loc, "restrictions": [], "title": "QA",
+                            "description": "", "remote": True}))
+
+berlin = {"title": "QA Engineer", "company": "X", "location": "Berlin, Germany",
+          "description": "", "restrictions": [], "remote": False,
+          "relocation": False, "salary": "", "source": "t", "url": "u"}
+check("on-site Germany is tier 25, not tier 4", r.assign_tier(berlin) == 25,
+      f"got {r.assign_tier(berlin)}")
+berlin_remote = dict(berlin, location="Remote, Germany", remote=True)
+check("remote Germany is also tier 25", r.assign_tier(berlin_remote) == 25,
+      f"got {r.assign_tier(berlin_remote)}")
+berlin_v = dict(berlin, tier=25, remote=False)
+check("Germany ranks level with sponsored on-site, above single-country remote",
+      r.priority_rank(berlin_v) == 2.5, f"got {r.priority_rank(berlin_v)}")
+check("Germany has its own cap", 25 in r.MAX_PER_TIER)
+check("Germany is in the send order", 25 in r.TIER_ROWS)
+
 print("\n2. remote and sponsorship outrank on-site")
 jobs = [
     fake_job(4, 99),                       # on-site, highest score
@@ -93,6 +121,18 @@ check("name matching ignores case and spacing",
       r._normalise_name("SOFTSWISS") == r._normalise_name("Soft Swiss") == "softswiss")
 check("the watchlist is not empty", len(r.WATCH_COMPANIES) >= 20)
 check("regions are searched", len(r.REGION_SEARCHES) >= 3)
+print("\n5d. the board's own category beats the title")
+for tags, title, want_block, note in [
+    (["Marketing"], "AI Automation Engineer", True, "a marketing ad with an engineering title"),
+    (["Online Marketing"], "Praktikum Produktmanagement", True, "a German marketing role"),
+    (["Sales"], "AI Automation Engineer", True, "sales filed under a tech title"),
+    (["QA", "Remote"], "QA Engineer", False, "a genuine QA tag"),
+    (["Automation", "Engineering"], "Automation Engineer", False, "engineering, no QA word needed"),
+    ([], "AI Automation Engineer", False, "no tags, so the title decides"),
+]:
+    j = r.job("Arbeitnow", title, "X", "Berlin", "https://x", "", "", tags=tags)
+    check(note, r.tagged_out_of_field(j) == want_block)
+
 print("\n6. LinkedIn rotation")
 shards = r.linkedin_shards()
 check("there is one shard per two-hour slot or fewer", len(shards) <= 12)
@@ -114,7 +154,34 @@ check("slot picks a shard", 0 <= r.linkedin_slot() < 12)
 print("\n3. caps give remote the most room")
 check("tier 2 cap is the largest", r.MAX_PER_TIER[2] >= max(r.MAX_PER_TIER.values()))
 check("tier 4 cap is the smallest", r.MAX_PER_TIER[4] == min(r.MAX_PER_TIER.values()))
+check("Armenia is capped tighter than remote, so it cannot flood the chat",
+      r.MAX_PER_TIER[1] < r.MAX_PER_TIER[2], f"got {r.MAX_PER_TIER[1]}")
+check("Germany has a real cap, not zero", r.MAX_PER_TIER[25] >= 4)
 check("caps add up to at least one run", sum(r.MAX_PER_TIER.values()) >= r.MAX_PER_RUN)
+
+print("\n3b. the same posting never comes back")
+dup = {"title": "QA Engineer", "company": "Acme", "location": "Remote",
+       "description": "", "restrictions": [], "remote": True,
+       "relocation": False, "salary": "", "source": "t", "url": "u1"}
+key = r.job_key(dup)
+check("company+title is the key", key.startswith("acme|"), f"got {key}")
+check("a different board for the same job gets the same key",
+      r.job_key(dict(dup, url="https://other.example/job/9")) == key)
+check("capitalisation and punctuation do not create a new key",
+      r.job_key(dict(dup, company="ACME, Inc.", title="QA  Engineer")) == "acmeinc|qaengineer")
+
+# The seeding step is what stops the rows already in his sheet coming back.
+seeded = {}
+count = r.seed_from_sheet(seeded, {"commit|qaengineer": "x", "softconstruct|qualityassuranceengineer": "x",
+                                   "company:commit": "x"})
+check("seeding counts only company|title keys", count == 2, f"got {count}")
+check("seeding marks the key as already notified", "commit|qaengineer" in seeded)
+check("seeding is skipped once the list has anything in it",
+      r.seed_from_sheet({"a": "b"}, {"c|d": "x"}) == 0)
+check("the seeded mark is not a date, so age can never trim it",
+      seeded["commit|qaengineer"] == r.ALREADY_SEEDED)
+check("a broken SPREADSHEET_ID URL is refused instead of silently skipped",
+      r.sheet_keys() == set())
 
 print("\n4. messages")
 msg = r.format_job(fake_job(2, 80, "we offer visa sponsorship and relocation support"), 2)
@@ -191,4 +258,24 @@ print()
 if failures:
     print(f"{len(failures)} check(s) failed: {failures}")
     sys.exit(1)
+def _swiss_cases():
+    """A Swiss permit line blocks the job; a Swiss company that does not state one
+    does not. Three Swiss on-site roles in two days made this worth a rule."""
+    def job(desc):
+        return {"title": "Software Test Engineer", "company": "X", "location": "Bern",
+                "url": "", "source": "", "description": desc.lower()}
+    cases = [
+        ("eligibility to work in switzerland (swiss/eu/efta work permit)",
+         True, "stated permit blocks it"),
+        ("experience with katalon and appium. no permit mentioned.",
+         False, "a Swiss company that says nothing is not blocked"),
+        ("fully remote from anywhere. playwright and pytest.",
+         False, "plain remote is never blocked"),
+    ]
+    for desc, want, label in cases:
+        check(f"swiss: {label}", r.is_hard_excluded(job(desc)) == want)
+
+
+_swiss_cases()
+
 print("all checks passed")
