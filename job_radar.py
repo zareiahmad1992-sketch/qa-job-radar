@@ -2237,18 +2237,54 @@ def send_priority(j):
     return (priority_rank(j), fresh, -j["score"])
 
 
-def trim_to_caps(jobs):
-    """Applies the per-tier caps, then rebuilds the send order.
+def trim_to_caps(jobs, total=None):
+    """Global ranking, one guaranteed slot per tier, per-tier caps on top.
 
-    Kept in one place so --dry-run shows exactly what --once would send. Before this,
-    the dry run printed the raw list and the two disagreed.
+    REWRITTEN 23 Nov, second attempt. He said new postings were getting lost.
+
+    Three things were wrong. Tier 2 alone was allowed ten slots, so its stale
+    postings crowded out everything below it. The result was then cut to
+    MAX_PER_RUN with no record of what it dropped. And priority_rank sorts by
+    tier BEFORE freshness, so a twenty-five-day-old tier-2 posting beat a role
+    posted this morning in tier 3. Across a 227-message board that is how a real
+    opening disappears.
+
+    Now: a tier that has any new posting is guaranteed one slot, the remaining
+    slots go to the global order so freshness and fit win across tiers, and each
+    tier still cannot exceed MAX_PER_TIER.
     """
-    trimmed = []
+    if total is None:
+        total = MAX_PER_RUN
+    buckets = {}
+    for j in sorted(jobs, key=send_priority):
+        buckets.setdefault(j["tier"], []).append(j)
+
+    chosen = []
+    taken = set()
+
+    # Pass 1: one guaranteed slot per tier, so nothing is starved.
     for tier_value in TIER_ROWS:
-        bucket = sorted([j for j in jobs if j["tier"] == tier_value], key=send_priority)
-        trimmed.extend(bucket[:MAX_PER_TIER[tier_value]])
-    trimmed.sort(key=send_priority)
-    return trimmed
+        bucket = buckets.get(tier_value) or []
+        if bucket and len(chosen) < total:
+            chosen.append(bucket[0])
+            taken.add(id(bucket[0]))
+
+    # Pass 2: fill the rest by global order, respecting the per-tier caps.
+    used = {}
+    for j in chosen:
+        used[j["tier"]] = used.get(j["tier"], 0) + 1
+    for j in sorted(jobs, key=send_priority):
+        if len(chosen) >= total:
+            break
+        if id(j) in taken:
+            continue
+        if used.get(j["tier"], 0) >= MAX_PER_TIER.get(j["tier"], 4):
+            continue
+        used[j["tier"]] = used.get(j["tier"], 0) + 1
+        chosen.append(j)
+
+    chosen.sort(key=send_priority)
+    return chosen
 
 
 def seed_from_sheet(already, sheet) -> int:
@@ -2315,9 +2351,11 @@ def run(dry_run=False, report=False, dump_json=False):
             return True
         if key in seen:
             return True
-        company = normalise_key_part(job_.get("company"))
-        if company and company != UNKNOWN_COMPANY and f"company:{company}" in sheet:
-            return True
+        # FIXED 23 Nov: the company-only test used to live here and it silently
+        # killed every future role at a company already in the sheet. With 46
+        # such keys in the permanent list, a brand-new Senior QA role at any of
+        # those 46 employers could never reach the chat. Company+title is the
+        # identity; the company alone is not.
         return False
 
     before = len(jobs)
@@ -2329,10 +2367,10 @@ def run(dry_run=False, report=False, dump_json=False):
 
     # Tier first, then score inside the tier.
     new.sort(key=send_priority)
-    for j in new:
-        key = job_key(j)
-        seen[key] = today
-        already[key] = today
+    # FIXED 23 Nov: the seen/already marking used to happen HERE, before the cut.
+    # Anything the per-tier caps or MAX_PER_RUN dropped was already recorded as
+    # sent, so it never came round again and the posting was lost silently.
+    # Marking now happens inside the send loop, only after a send succeeds.
 
     if dry_run:
         to_send = trim_to_caps(new)
@@ -2352,7 +2390,7 @@ def run(dry_run=False, report=False, dump_json=False):
             print()
         return
 
-    new = trim_to_caps(new)
+    new_sent = trim_to_caps(new, total=MAX_PER_RUN)
 
     sent = 0
     sent_jobs = []
@@ -2360,11 +2398,15 @@ def run(dry_run=False, report=False, dump_json=False):
     tailor_dir = Path("/tmp/tailored")
     tailor_error_shown = False
 
-    for j in new[:MAX_PER_RUN]:
+    for j in new_sent:
         try:
             telegram_send(format_job(j, j["tier"]))
             sent += 1
             sent_jobs.append(j)
+            # FIXED 23 Nov: recorded only now, after the message actually landed.
+            key = job_key(j)
+            seen[key] = today
+            already[key] = today
             time.sleep(1)
         except Exception as exc:
             print(f"Send failed for {j['title']}: {exc}")
@@ -2389,9 +2431,11 @@ def run(dry_run=False, report=False, dump_json=False):
             if not tailor_error_shown:
                 print(f"  document generation unavailable: {type(exc).__name__}: {exc}")
                 tailor_error_shown = True
-    if len(new) > MAX_PER_RUN:
+    if len(new) > len(new_sent):
+        waiting = len(new) - len(new_sent)
         try:
-            telegram_send(f"ℹ️ {len(new) - MAX_PER_RUN} more matched. They will come through on the next run.")
+            telegram_send(f"ℹ️ {waiting} more matched and are queued. They are NOT "
+                          f"marked as sent, so they come through on the next run.")
         except Exception:
             pass
     # Decided before the heartbeat is built, so the message can say whether the
