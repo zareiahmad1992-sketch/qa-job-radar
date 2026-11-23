@@ -89,7 +89,19 @@ def access_token() -> str:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())["access_token"]
 
-    # OAuth refresh token path
+    # OAuth refresh token path. Checked explicitly: os.environ["GOOGLE_CLIENT_ID"]
+    # raised a bare KeyError, and the caller printed "Sheet duplicate check
+    # skipped: KeyError: 'GOOGLE_CLIENT_ID'", which tells you nothing about what to
+    # fix or that the service-account JSON is the modern path.
+    missing = [name for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
+                                 "GOOGLE_REFRESH_TOKEN") if not os.getenv(name)]
+    if missing:
+        raise RuntimeError(
+            "No usable Google credentials. Either set GOOGLE_SERVICE_ACCOUNT_JSON "
+            "(recommended: share the sheet with the service-account email) or set "
+            f"all of GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN. "
+            f"Missing: {', '.join(missing)}"
+        )
     payload = urllib.parse.urlencode({
         "client_id": os.environ["GOOGLE_CLIENT_ID"],
         "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],

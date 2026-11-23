@@ -210,7 +210,7 @@ OPENERS = {
 }
 
 BODY_BLOCKS = {
-    "manual": "Most of my week is still manual, and I do not treat that as a stepping "
+    "manual": "The manual half of my week is real work, and I do not treat it as a stepping "
               "stone. At Dotin I write the test plans and cases from the requirements, "
               "work through them with boundary value, equivalence partitioning and state "
               "transitions rather than clicking whatever the screen shows, and make sure "
@@ -452,9 +452,10 @@ CLOSERS = {
                       "my CV. My automation is Playwright and Selenium, which is the same "
                       "page-object thinking with a different library.",
 
-    "caveat_typescript": "One honest gap: TypeScript at depth. My Playwright work has "
-                         "been in Python and JavaScript, and I am moving to TypeScript now "
-                         "rather than claiming years of it.",
+    "caveat_typescript": "One honest gap: TypeScript in production. I know the language "
+                         "\u2014 types, interfaces, generics, the compiler \u2014 but my "
+                         "Playwright work has been in JavaScript and I have not yet shipped a "
+                         "suite in TypeScript. The transfer is tooling rather than testing.",
 
     "caveat_cloud": "One honest gap: I am still early on Azure DevOps, having worked in "
                     "GitLab CI. The pipeline concepts are the same and I would be "
@@ -1122,8 +1123,8 @@ def build_resume(job, out_path: Path):
     # honesty, it is a cover letter in the wrong document.
     learning = []
     if has(job, "typescript"):
-        learning.append("TypeScript, moving my Playwright work onto it rather than "
-                        "claiming years of it")
+        learning.append("TypeScript \u2014 known and practised, not yet shipped in a "
+                        "production suite")
     if has(job, "generative ai", "genai"):
         learning.append("Python integration for automated AI-assisted regression, "
                         "which is where the test suites are headed")
@@ -1224,6 +1225,26 @@ def build_cover_letter(job, out_path: Path):
                  Paragraph("<b>Ahmad Zarei</b>", body)]
         return flow
 
+    def page_count(buf) -> int:
+        """Counts pages without pymupdf.
+
+        The workflow installs only reportlab and cryptography, so the old
+        `import pymupdf` here raised ModuleNotFoundError on every single run, the
+        fit check never ran, and every cover letter fell back to the plainest
+        variant. Counting "/Type /Page" objects in the built PDF needs nothing
+        beyond the standard library, and reportlab writes uncompressed object
+        headers so the count is reliable.
+        """
+        data = buf.getvalue()
+        if not data:
+            return 1
+        trimmed = data.rstrip()
+        if not trimmed.endswith(b"%%EOF"):
+            # reportlab finished the file; this is only a sanity guard.
+            pass
+        count = len(re.findall(rb"/Type\s*/Page[^s]", data))
+        return max(count, 1)
+
     def fits(flow) -> bool:
         import io
         buf = io.BytesIO()
@@ -1231,12 +1252,13 @@ def build_cover_letter(job, out_path: Path):
                                   topMargin=0.62 * inch, bottomMargin=0.55 * inch,
                                   leftMargin=0.95 * inch, rightMargin=0.95 * inch)
         probe.build(flow)
-        buf.seek(0)
-        import pymupdf
-        return pymupdf.open(stream=buf.read(), filetype="pdf").page_count <= 1
+        return page_count(buf) <= 1
 
     # Try the richest version first and give something up only when it does not fit.
-    candidate = compose(len(gaps), 2)
+    # Richest first, then give up one optional block at a time. If the measurement
+    # itself blows up we keep trying smaller variants, and only then fall back -
+    # an exception in the ruler must not decide the letter.
+    candidate = None
     for n_gaps, optional in (
         (len(gaps), 2), (len(gaps), 1), (len(gaps), 0),
         (min(len(gaps), 1), 0), (0, 0),
@@ -1247,11 +1269,11 @@ def build_cover_letter(job, out_path: Path):
                 candidate = trial
                 break
         except Exception as exc:
-            print(f"  fit check failed ({type(exc).__name__}), keeping the plainest letter")
-            candidate = compose(min(len(gaps), 1), 1)
-            break
-    if not candidate:
+            print(f"  fit check could not measure ({type(exc).__name__}: {exc})")
+            continue
+    if candidate is None:
         candidate = compose(min(len(gaps), 1), 1)
+        print("  fit check unavailable, used a middle-richness letter")
 
     doc.build(candidate)
 

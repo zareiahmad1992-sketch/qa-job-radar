@@ -447,9 +447,22 @@ SPONSORSHIP_MARKERS = [
 # --------------------------------------------------------------------------- #
 
 def fetch(url: str, timeout: int = 30) -> bytes:
+    """Plain fetch. Staff.am answers 403 to anything that does not look like a
+    browser, so the browser-shaped headers are sent to every host rather than
+    special-casing one."""
     req = urllib.request.Request(url, headers={
         "User-Agent": USER_AGENT,
-        "Accept": "application/json,text/html,application/xml",
+        "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                   "application/json;q=0.8,*/*;q=0.7"),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "close",
     })
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return response.read()
@@ -686,7 +699,24 @@ class StaffLinkParser(HTMLParser):
 
 def parse_staff_am():
     """Armenia, on-site. Kept as its own tier because it needs no relocation."""
-    raw = fetch("https://staff.am/en/jobs/quality-assurance").decode("utf-8", "replace")
+    # One retry with a pause. Staff.am is the single best source for Armenia - it
+    # carried Equiti, ImagineLive, TeamViewer, Zeyro and Art Production in one week
+    # - so losing it silently costs the most relevant postings on the board.
+    raw = None
+    for attempt in range(2):
+        try:
+            raw = fetch("https://staff.am/en/jobs/quality-assurance").decode(
+                "utf-8", "replace")
+            break
+        except Exception as exc:
+            print(f"  Staff.am attempt {attempt + 1} failed: "
+                  f"{type(exc).__name__}: {exc}")
+            if attempt == 0:
+                time.sleep(5)
+    if raw is None:
+        print("  Staff.am is blocking CI requests. The Armenia source is OFF for "
+              "this run; the sheet and the other feeds still work.")
+        return []
     parser = StaffLinkParser()
     parser.feed(raw)
     out = []
@@ -1785,6 +1815,13 @@ def sheet_keys() -> set:
         rows = sheets_get(token, spreadsheet_id, f"{SHEET_TAB}!A1:E900")
     except Exception as exc:
         print(f"Sheet duplicate check skipped: {type(exc).__name__}: {exc}")
+        # Silence here is expensive: without the sheet the duplicate guard falls
+        # back to already-notified.json only, and the same role gets sent twice
+        # from two different sources.
+        other = os.getenv("GOOGLE_REFRESH_TOKEN")
+        if not other:
+            print("  -> no GOOGLE_SERVICE_ACCOUNT_JSON and no GOOGLE_REFRESH_TOKEN "
+                  "in this run. Add one of them as a repository secret.")
         return set()
 
     keys = set()
@@ -2474,6 +2511,9 @@ def run(dry_run=False, report=False, dump_json=False):
                 print(f"Unsent check skipped: {type(exc).__name__}: {exc}")
         except Exception as exc:
             print(f"Sheet sync failed: {type(exc).__name__}: {exc}")
+            print("  -> the jobs were still sent to Telegram; only the sheet "
+                  "write failed. Check that the spreadsheet is shared with the "
+                  "service-account email as Editor.")
             sheet_line = f"⚠️ Sheet NOT updated: {type(exc).__name__}"
     else:
         print("Sheet sync skipped: no Google credentials in this run")

@@ -522,13 +522,39 @@ def norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
-def pick_row(rows, company, kind):
-    """Chooses the row to update.
+# Words that say nothing about WHICH application at a company a mail refers to.
+# What is left - "imagine", "live", "presenter", "persian", "automation" - is what
+# separates Digitain's three simultaneous rows from one another.
+TITLE_STOPWORDS = {
+    "senior", "middle", "junior", "lead", "principal", "staff", "chief", "head",
+    "the", "and", "for", "with", "all", "genders", "role", "position", "vacancy",
+    "engineer", "engineering", "developer", "analyst", "specialist", "consultant",
+    "test", "tester", "testing", "qa", "qc", "quality", "assurance", "control",
+    "remote", "hybrid", "onsite", "full", "time", "part", "contract", "permanent",
+    "ii", "iii", "iv", "one", "two", "new", "job", "jobs",
+}
 
-    Newest matching row wins, but only among rows whose title is plausible for the
-    event. A rejection for a QA application must not close a Game Presenter row at
-    the same company, which is exactly what happened with Digitain's three
-    simultaneous applications.
+
+def title_tokens(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]{3,}", (text or "").lower())
+            if w not in TITLE_STOPWORDS}
+
+
+def pick_row(rows, company, kind="", hint=""):
+    """Chooses the row to update, out of every row that matches the company.
+
+    Company alone is not enough. Digitain had three applications open at once -
+    Senior QA Engineer, Persian Speaking Game Presenter and Georgian Speaking Game
+    Presenter - and writing a QA rejection onto the presenter row is a silent,
+    plausible-looking error. So the job title is matched too.
+
+    hint is the text the mail itself used to identify the position, usually the
+    subject plus the first lines of the body, because ATS confirmations name the
+    role in the body and not in the subject.
+
+    When the mail gives nothing to match a title on, the newest matching row wins,
+    which is the same guess the old code made - but now it is the fallback rather
+    than the only behaviour.
     """
     target = norm(company)
     if not target:
@@ -544,7 +570,21 @@ def pick_row(rows, company, kind):
             candidates.append(index)
     if not candidates:
         return None
-    return candidates[-1]
+    if len(candidates) == 1:
+        return candidates[0]
+
+    hint_tokens = title_tokens(hint)
+    if not hint_tokens:
+        return candidates[-1]
+
+    best_row, best_score = candidates[-1], 0
+    for index in candidates:
+        row = rows[index - 1]
+        title = row[COL_TITLE - 1] if len(row) >= COL_TITLE else ""
+        score = len(title_tokens(title) & hint_tokens)
+        if score >= best_score:
+            best_row, best_score = index, score
+    return best_row
 
 
 def current_status(rows, row_number):
@@ -554,7 +594,7 @@ def current_status(rows, row_number):
     return (row[COL_STATUS - 1] or "").strip()
 
 
-def apply_status(token, spreadsheet_id, rows, company, kind, when):
+def apply_status(token, spreadsheet_id, rows, company, kind, when, hint=""):
     """Writes one row and returns (row_number, old, new, matched_name) or None.
 
     company may be a list of candidates ordered best-first; the first one that
@@ -564,7 +604,7 @@ def apply_status(token, spreadsheet_id, rows, company, kind, when):
     names = company if isinstance(company, (list, tuple)) else [company]
     row_number, matched = None, ""
     for name in names:
-        row_number = pick_row(rows, name, kind)
+        row_number = pick_row(rows, name, kind, hint)
         if row_number is not None:
             matched = name
             break
@@ -677,6 +717,7 @@ def run(dry_run: bool = False, days: int = 3) -> list:
         kind, company = verdict
         events.append({"kind": kind, "company": company,
                        "candidates": candidates_for(message, known),
+                       "hint": f"{message['subject']} {message['body'][:400]}",
                        "subject": message["subject"],
                        "sender": message["sender"],
                        "date": message["date"]})
@@ -707,7 +748,8 @@ def run(dry_run: bool = False, days: int = 3) -> list:
                     continue
                 result = apply_status(token, spreadsheet_id, rows,
                                       item.get("candidates") or item["company"],
-                                      item["kind"], item["date"])
+                                      item["kind"], item["date"],
+                                      item.get("hint", ""))
                 if result:
                     changes.append(result)
                     print(f"  sheet: Jobs row {result[0]} {result[3]} "
