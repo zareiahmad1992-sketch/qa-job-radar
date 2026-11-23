@@ -34,7 +34,13 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from email_alerts import _guess_company, fetch_alert_messages  # reuse the IMAP plumbing
+from email_alerts import _guess_company  # reuse the IMAP plumbing
+
+# NOTE 23 Nov: this used to import fetch_alert_messages, which yields only
+# mail from board senders. Every ATS reply and rejection - bamboohr, workday,
+# comeet, ashby, workable - was filtered out before the classifier ran, so the
+# job could only ever see LinkedIn confirmations. hourly_watch.py replaces
+# this script; see .github/workflows/hourly_watch.yml.
 
 STATE_FILE = Path(__file__).with_name("seen_replies.json")
 
@@ -102,6 +108,54 @@ NOT_ABOUT_ONE_APPLICATION = re.compile(
     r"your job search|complete your profile)",
     re.I,
 )
+
+
+def fetch_reply_messages(days: int = 21, limit: int = 400):
+    """Every recent message, not just board alerts.
+
+    A reply about an application can come from anywhere - a person, an ATS, a
+    no-reply address - so the sender is not a useful filter here. Noise is decided
+    later by is_noise().
+    """
+    import email as email_module
+    import imaplib
+    from datetime import datetime, timedelta
+
+    from email_alerts import (_clean, _decode_header, _first_address,
+                              _plain_body, IMAP_HOST)
+
+    user, password = os.getenv("EMAIL_USER"), os.getenv("EMAIL_APP_PASSWORD")
+    if not user or not password:
+        raise RuntimeError("EMAIL_USER and EMAIL_APP_PASSWORD are not set.")
+    box = imaplib.IMAP4_SSL(IMAP_HOST)
+    box.login(user, password)
+    box.select("INBOX")
+    try:
+        try:
+            status, data = box.search(None, f'(X-GM-RAW "newer_than:{days}d")')
+            if status != "OK":
+                raise RuntimeError("refused")
+        except Exception:
+            since = (datetime.now() - timedelta(days=days)).strftime("%d-%b-%Y")
+            status, data = box.search(None, f"(SINCE {since})")
+        for msg_id in data[0].split()[-limit:]:
+            status, payload = box.fetch(msg_id, "(RFC822)")
+            if status != "OK" or not payload or not isinstance(payload[0], tuple):
+                continue
+            message = email_module.message_from_bytes(payload[0][1])
+            yield {
+                "sender": _first_address(message.get("From", "")),
+                "subject": _clean(_decode_header(message.get("Subject", ""))),
+                "body": _plain_body(message),
+                "date": message.get("Date", ""),
+                "mid": message.get("Message-ID", "") or str(msg_id),
+            }
+    finally:
+        try:
+            box.close()
+        except Exception:
+            pass
+        box.logout()
 
 
 def is_noise(message) -> bool:
@@ -172,7 +226,7 @@ def format_reply(kind, company, subject, when) -> str:
 def run(dry_run=False):
     seen = load_seen()
     results = []
-    for message in fetch_alert_messages(days=21, limit=400):
+    for message in fetch_reply_messages(days=21, limit=400):
         mid = message["mid"] or (message["sender"] + message["subject"] + message["date"])
         if mid in seen:
             continue

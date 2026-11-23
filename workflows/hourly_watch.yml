@@ -1,0 +1,109 @@
+name: Hourly Mail Watch
+
+# The user asked for one thing: read the mail every hour, decide without asking,
+# and write the answer into the sheet. This is that job.
+#
+# What it does every hour
+#   * reads the inbox over IMAP with the App Password that is already in secrets
+#   * classifies each new message: Applied / Assessment / Interview / Offer / Rejected
+#   * writes Jobs!I:N  (Status, Last reply, Next action) and appends to the Inbox tab
+#   * sends ONE Telegram message, and puts anything urgent at the top of it
+#   * flags any mail about a new sign-in, a passkey or a password change, job or no job
+#
+# What it will never do
+#   * delete mail. Deleting needs a human, because this week's lesson was that a
+#     receipt and a rejection can arrive from the same sender on different days
+#   * downgrade a row that already says Interview
+#   * report "no reply". A silent run means this job saw nothing, never that an
+#     employer said nothing - the mistake that produced three wrong claims in a day
+#
+# It is separate from job_radar.yml on purpose. A scan that is waiting out a
+# LinkedIn throttle must never delay an interview invitation.
+
+on:
+  schedule:
+    # Every hour, on the hour. Yerevan is UTC+4, so 00:00 UTC is 04:00 there.
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Read and classify, write nothing, send nothing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hourly-mail-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      # cryptography signs the Google service-account token. Everything else is
+      # the standard library, so there is nothing else to install.
+      - name: Install dependencies
+        run: pip install --quiet cryptography
+
+      - name: Read the mailbox and write the sheet
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            python hourly_watch.py --dry-run --days 3
+          else
+            python hourly_watch.py --once --days 3
+          fi
+
+      # 04:00 UTC is 08:00 in Yerevan: one heartbeat a day, so that silence from
+      # this workflow is never ambiguous.
+      - name: Morning digest
+        if: github.event.schedule == '0 4 * * *'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python hourly_watch.py --digest-only
+
+      - name: Save watch state
+        run: |
+          if [ -n "$(git status --porcelain -- seen_hourly.json)" ]; then
+            git config user.name "hourly-watch[bot]"
+            git config user.email "hourly-watch[bot]@users.noreply.github.com"
+            git add seen_hourly.json
+            git commit -m "Update hourly mail watch state"
+            for attempt in 1 2 3; do
+              git pull --rebase --autostash && git push && break
+              echo "push attempt $attempt failed, retrying"
+              sleep 5
+            done
+          else
+            echo "No state changes to commit."
+          fi
+
+      - name: Report failure to Telegram
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=Hourly mail watch FAILED. Open the Actions log." >/dev/null || true

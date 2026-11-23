@@ -139,8 +139,12 @@ def fetch_alert_messages(days: int = 14, limit: int = 400):
         # precise than IMAP's built in date search. Fall back if it is refused.
         ids = []
         try:
-            query = " ".join(f"from:{s}" for s in ALERT_SENDERS[:1])
-            query = f'(X-GM-RAW "newer_than:{days}d {{from:linkedin.com from:djinni.co from:staff.am from:arbeitnow from:jobicy.org from:himalayas.app from:remotive.com from:weworkremotely.com from:landing.jobs from:pracuj.pl}}")'
+            # One {days}, once. The old line had a doubled placeholder and a
+            # literal "newerr_than", which Gmail answers with an empty set -
+            # so this watcher was reading an empty search result and reporting
+            # success. That is the same class of bug as claiming "no receipt".
+            senders = " ".join(f"from:{s}" for s in ALERT_SENDERS)
+            query = f'(X-GM-RAW "newer_than:{days}d {senders}")'
             status, data = box.search(None, query)
             if status == "OK":
                 ids = data[0].split()
